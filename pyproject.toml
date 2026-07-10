@@ -1,0 +1,13 @@
+[project]
+name = "autosorter"
+version = "0.1.0"
+description = "Privacy-first, fully offline photo organizer for Windows — groups photos by person automatically."
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "PySide6>=6.7",
+    "opencv-python>=4.10",
+    "numpy>=1.26",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

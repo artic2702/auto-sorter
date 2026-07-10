@@ -1,0 +1,20 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+
+# App data (never commit user photo data)
+appdata/
+*.db
+*.db-wal
+*.db-shm
+
+# IDE / OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
