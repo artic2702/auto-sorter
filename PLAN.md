@@ -5,7 +5,7 @@
 ## Progress
 
 - [x] **M0** — Scaffold: git, Python 3.12 venv, deps, models downloaded, empty window, first test
-- [ ] **M1** — Scan folder → SQLite + thumbnails + live-count UI
+- [x] **M1** — Scan folder → SQLite + thumbnails + live-count UI
 - [ ] **M2** — Face detection (worker pool) + face thumbs + boxes in viewer
 - [ ] **M3** — Faceprints (align + SFace) stored; dev "find similar" panel
 - [ ] **M4** — **People discovery + rename** ← first full vertical slice
