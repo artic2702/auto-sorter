@@ -74,6 +74,11 @@ class DetectedFace:
     # Detection confidence: 0.0 (uncertain) to 1.0 (very confident)
     confidence: float
 
+    # Raw 15-number detection result from YuNet (needed by SFace's alignCrop).
+    # Format: [x, y, w, h, lm1_x, lm1_y, ..., lm5_x, lm5_y, score]
+    # We store this so SFace can produce the EXACT alignment it was trained on.
+    raw_detection: Optional[np.ndarray] = None
+
     def landmarks_json(self) -> str:
         """Serialize landmarks to JSON for database storage."""
         return json.dumps(self.landmarks)
@@ -241,6 +246,7 @@ class FaceDetector:
                 bbox=(x, y, face_w, face_h),
                 landmarks=landmarks,
                 confidence=confidence,
+                raw_detection=row.copy(),  # Keep raw for SFace alignCrop
             ))
 
         # Sort by confidence, highest first

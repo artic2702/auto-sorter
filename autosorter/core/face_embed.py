@@ -83,6 +83,34 @@ class FaceRecognizer:
             "",  # config (not needed for ONNX)
         )
 
+    def align_crop(
+        self, image: np.ndarray, raw_detection: np.ndarray
+    ) -> Optional[np.ndarray]:
+        """
+        Produce an aligned face crop using SFace's BUILT-IN alignment.
+
+        WHY USE THIS INSTEAD OF OUR align_face()?
+        SFace was trained on faces aligned in a SPECIFIC way. If we use
+        a different alignment, the embeddings are less accurate — like
+        measuring someone's height in centimeters but comparing to a
+        chart in inches. Using SFace's own alignCrop ensures the face
+        is positioned EXACTLY how the model expects.
+
+        Args:
+            image:         The full original image (BGR).
+            raw_detection: The raw 15-number detection result from YuNet.
+
+        Returns:
+            A 112×112 aligned face crop, or None on failure.
+        """
+        if image is None or raw_detection is None:
+            return None
+        try:
+            aligned = self._recognizer.alignCrop(image, raw_detection)
+            return aligned
+        except Exception:
+            return None
+
     def compute(self, aligned_face: np.ndarray) -> Optional[np.ndarray]:
         """
         Compute a 128-dimensional embedding for an aligned face image.

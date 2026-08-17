@@ -117,8 +117,15 @@ class DetectWorker(QThread):
                 else:
                     # === STEP 2: Process each face ===
                     for face in faces:
-                        # Align the face (rotate so eyes are level → 112×112)
-                        aligned = align_face(image, face.landmarks)
+                        # Align face with OUR method (for display thumbnail)
+                        aligned_display = align_face(image, face.landmarks)
+
+                        # Align face with SFACE's method (for embedding)
+                        # SFace's alignCrop uses the exact alignment the model
+                        # was trained on → much more accurate embeddings
+                        aligned_sface = recognizer.align_crop(
+                            image, face.raw_detection
+                        )
 
                         # Insert face into database FIRST to get the face_id
                         face_id = db.insert_face(
@@ -132,10 +139,11 @@ class DetectWorker(QThread):
                             quality=face.quality_score(),
                         )
 
-                        if aligned is not None:
-                            # Save aligned face thumbnail to disk
+                        # Save display thumbnail
+                        thumb_to_save = aligned_sface if aligned_sface is not None else aligned_display
+                        if thumb_to_save is not None:
                             thumb_path = save_face_thumb(
-                                aligned, face_thumbs_dir, face_id
+                                thumb_to_save, face_thumbs_dir, face_id
                             )
                             db._conn.execute(
                                 "UPDATE faces SET thumb_path = ? WHERE id = ?",
@@ -143,7 +151,9 @@ class DetectWorker(QThread):
                             )
 
                             # === STEP 3: Compute embedding (SFace) ===
-                            embedding = recognizer.compute(aligned)
+                            # Use SFace-aligned crop for best accuracy
+                            embed_input = aligned_sface if aligned_sface is not None else aligned_display
+                            embedding = recognizer.compute(embed_input)
                             if embedding is not None:
                                 # Convert numpy array to raw bytes for storage
                                 emb_bytes = FaceRecognizer.embedding_to_bytes(
