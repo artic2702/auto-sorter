@@ -8,5 +8,6 @@ Read them in order — each one builds on the previous.
 | [M0_scaffold.md](M0_scaffold.md) | M0 — Scaffold | Project setup, virtual environments, AI models, pytest |
 | [M1_scan_and_database.md](M1_scan_and_database.md) | M1 — Scan & Database | SQLite, file walking, thumbnails, threads, Qt signals |
 | [M2_face_detection.md](M2_face_detection.md) | M2 — Face Detection | YuNet AI, confidence thresholds, affine transforms, QPainter |
+| [M3_faceprints.md](M3_faceprints.md) | M3 — Faceprints | Embeddings, cosine similarity, L2 norm, BLOB storage, matrix search |
 
 *More guides will be added as we complete each milestone!*

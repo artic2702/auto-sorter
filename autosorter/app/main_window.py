@@ -384,18 +384,20 @@ class MainWindow(QMainWindow):
         self._load_thumbnail_grid()
 
     # ==================================================================
-    # Signal handlers — Detection (M2)
+    # Signal handlers — Detection (M2 + M3)
     # ==================================================================
 
-    def _on_detect_progress(self, done: int, total: int, faces: int) -> None:
+    def _on_detect_progress(self, done: int, total: int, faces: int,
+                            embedded: int) -> None:
         self._progress_bar.setRange(0, total)
         self._progress_bar.setValue(done)
         self._scan_label.setText(
-            f"Detecting faces: {done} / {total} images  ({faces} faces found)"
+            f"Detecting faces: {done}/{total} images  "
+            f"({faces} faces, {embedded} embeddings)"
         )
 
     def _on_detect_finished(self, total_images: int, total_faces: int,
-                            errors: int) -> None:
+                            total_embedded: int, errors: int) -> None:
         self._start_btn.setEnabled(True)
         self._detect_btn.setEnabled(True)
         self._detect_btn.setText("🔍  Re-Detect")
@@ -407,9 +409,9 @@ class MainWindow(QMainWindow):
 
         error_text = f", {errors} errors" if errors else ""
         self._status_label.setText(
-            f"✅ Detection complete: {total_faces} faces found "
+            f"✅ Complete: {total_faces} faces, {total_embedded} embeddings "
             f"in {total_images} images{error_text}. "
-            f"Click any photo to see face boxes."
+            f"Click a photo → click a face box → Find Similar!"
         )
         self._detect_worker = None
 
@@ -492,7 +494,9 @@ class MainWindow(QMainWindow):
         faces = db.get_faces_for_image(image_row["id"])
         db.close()
 
-        viewer = PhotoViewer(image_row["path"], faces)
+        viewer = PhotoViewer(
+            image_row["path"], faces, data_folder=self._data_folder
+        )
         viewer.show()
         # Keep a reference so the window doesn't get garbage-collected
         self._viewers.append(viewer)

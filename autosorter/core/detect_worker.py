@@ -1,20 +1,30 @@
 """
-Face detection worker — runs YuNet on all scanned images in a background thread.
+Face detection + embedding worker — runs YuNet AND SFace on all scanned images.
 
-=== WHAT IS THIS FILE? ===
-After M1's scanning + thumbnailing is done, images have status='processed'.
-This worker picks up those images, runs face detection on each one, saves
-face crops, and writes the results to the faces table.
+=== WHAT CHANGED FROM M2? ===
+M2: detect faces → save face crop → done
+M3: detect faces → save face crop → compute faceprint → store in DB
 
-=== THE PIPELINE (M1 → M2) ===
-M1 did:  Photo folder → scan files → thumbnails → status='processed'
-M2 adds: status='processed' → detect faces → save face crops → faces table
+=== THE FULL PIPELINE (M1 → M2 → M3, all in one pass) ===
+For each image:
+  1. Load image from disk (Unicode-safe)
+  2. Run YuNet face detection → bounding boxes + landmarks
+  3. For each face:
+     a. Align face using landmarks → 112×112 crop
+     b. Save face crop to disk
+     c. Run SFace on the crop → 128-number embedding
+     d. L2-normalize the embedding
+     e. Store everything in the faces table
 
-=== HOW IT AVOIDS RE-WORK ===
-On first run: all processed images get face detection.
-On re-run: only images WITHOUT any face rows are processed.
-This is handled by db.iter_images_needing_detection() which uses a
-LEFT JOIN to find images with no entries in the faces table.
+=== WHY ONE PASS INSTEAD OF TWO? ===
+We COULD run detection first, then a separate embedding pass.
+But doing it in one pass is:
+- Faster: the image is already loaded in memory
+- Simpler: one button, one progress bar
+- Atomic: each face is fully processed before moving to the next
+
+The only downside: if we add a better recognition model later,
+we need to re-embed all faces. But that's a future problem (M8).
 """
 
 from pathlib import Path
@@ -24,22 +34,24 @@ from PySide6.QtCore import QThread, Signal
 from autosorter.core.db import Database
 from autosorter.core.face_crop import align_face, save_face_thumb
 from autosorter.core.face_detect import FaceDetector
+from autosorter.core.face_embed import FaceRecognizer
 from autosorter.core.thumbnailer import _read_image_safe
 
 
 class DetectWorker(QThread):
     """
-    Background thread that runs face detection on all scanned images.
+    Background thread that runs face detection AND embedding on all images.
 
     Signals:
-        progress(done, total, faces_found)  — emitted after each image
-        finished(total_images, total_faces, errors)  — when done
+        progress(done, total, faces_found, embedded)  — after each image
+        finished(total_images, total_faces, total_embedded, errors)  — done
         error(message)  — if something goes seriously wrong
     """
 
-    progress = Signal(int, int, int)     # (done, total, total_faces_so_far)
-    finished = Signal(int, int, int)     # (total_images, total_faces, errors)
-    error = Signal(str)                  # (error_message)
+    # Updated signals to include embedding counts
+    progress = Signal(int, int, int, int)   # (done, total, faces, embedded)
+    finished = Signal(int, int, int, int)   # (images, faces, embedded, errors)
+    error = Signal(str)                     # (error_message)
 
     def __init__(self, data_folder: Path) -> None:
         """
@@ -57,30 +69,27 @@ class DetectWorker(QThread):
 
     def run(self) -> None:
         """
-        Main detection loop (runs in background thread).
+        Main detection + embedding loop (runs in background thread).
 
-        For each image:
-        1. Load the full image from disk
-        2. Run YuNet face detection
-        3. For each face found:
-           a. Align and crop the face
-           b. Save the face crop as a JPEG
-           c. Insert a row into the faces table
-        4. If no faces found, insert a sentinel row so we skip it next time
+        For each unprocessed image:
+        1. Load image → detect faces (YuNet)
+        2. For each face: align → save thumb → compute embedding (SFace) → store
         """
         try:
             db_path = self._data_folder / "library.db"
             db = Database(db_path)
 
-            # Create the FaceDetector ONCE (loading the model is expensive)
+            # Load BOTH models once (expensive to load, cheap to run)
             detector = FaceDetector()
+            recognizer = FaceRecognizer()
 
             face_thumbs_dir = self._data_folder / "face_thumbs"
 
-            # Count how many images need detection
+            # Count images needing detection
             total = db.count_images_needing_detection()
             done = 0
             total_faces = 0
+            total_embedded = 0
             errors = 0
 
             for row in db.iter_images_needing_detection():
@@ -94,26 +103,24 @@ class DetectWorker(QThread):
                 image = _read_image_safe(image_path)
 
                 if image is None:
-                    # Image can't be read (deleted, corrupted, etc.)
                     db.mark_no_faces(image_id)
                     errors += 1
                     done += 1
-                    self.progress.emit(done, total, total_faces)
+                    self.progress.emit(done, total, total_faces, total_embedded)
                     continue
 
-                # Run face detection!
+                # === STEP 1: Detect faces (YuNet) ===
                 faces = detector.detect(image)
 
                 if len(faces) == 0:
-                    # No faces found — mark so we skip this image next time
                     db.mark_no_faces(image_id)
                 else:
-                    # Process each detected face
+                    # === STEP 2: Process each face ===
                     for face in faces:
-                        # Align the face (rotate so eyes are level)
+                        # Align the face (rotate so eyes are level → 112×112)
                         aligned = align_face(image, face.landmarks)
 
-                        # Insert into database FIRST to get the face_id
+                        # Insert face into database FIRST to get the face_id
                         face_id = db.insert_face(
                             image_id=image_id,
                             bbox_x=face.bbox[0],
@@ -125,25 +132,65 @@ class DetectWorker(QThread):
                             quality=face.quality_score(),
                         )
 
-                        # Save aligned face thumbnail
                         if aligned is not None:
+                            # Save aligned face thumbnail to disk
                             thumb_path = save_face_thumb(
                                 aligned, face_thumbs_dir, face_id
                             )
-                            # Update the face row with the thumb path
                             db._conn.execute(
                                 "UPDATE faces SET thumb_path = ? WHERE id = ?",
                                 (thumb_path, face_id),
                             )
+
+                            # === STEP 3: Compute embedding (SFace) ===
+                            embedding = recognizer.compute(aligned)
+                            if embedding is not None:
+                                # Convert numpy array to raw bytes for storage
+                                emb_bytes = FaceRecognizer.embedding_to_bytes(
+                                    embedding
+                                )
+                                db.update_embedding(face_id, emb_bytes)
+                                total_embedded += 1
+
                             db._conn.commit()
 
                         total_faces += 1
 
                 done += 1
-                self.progress.emit(done, total, total_faces)
+                self.progress.emit(done, total, total_faces, total_embedded)
+
+            # === Also embed any faces from previous runs that lack embeddings ===
+            # (handles upgrade from M2 → M3: faces detected before embedding existed)
+            remaining = db.count_faces_needing_embedding()
+            if remaining > 0 and not self._cancel:
+                embed_done = 0
+                for face_row in db.iter_faces_needing_embedding():
+                    if self._cancel:
+                        break
+
+                    thumb_path = face_row["thumb_path"]
+                    if thumb_path is None:
+                        continue
+
+                    # Load the aligned face crop from disk
+                    aligned = _read_image_safe(thumb_path)
+                    if aligned is None:
+                        continue
+
+                    # Compute embedding
+                    embedding = recognizer.compute(aligned)
+                    if embedding is not None:
+                        emb_bytes = FaceRecognizer.embedding_to_bytes(embedding)
+                        db.update_embedding(face_row["id"], emb_bytes)
+                        total_embedded += 1
+
+                    embed_done += 1
+                    self.progress.emit(
+                        done, total, total_faces, total_embedded
+                    )
 
             db.close()
-            self.finished.emit(done, total_faces, errors)
+            self.finished.emit(done, total_faces, total_embedded, errors)
 
         except Exception as e:
             self.error.emit(f"Face detection failed: {e}")

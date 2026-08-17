@@ -523,6 +523,103 @@ class Database:
         return cursor.fetchall()
 
     # ------------------------------------------------------------------
+    # Embedding operations (M3)
+    # ------------------------------------------------------------------
+
+    def update_embedding(self, face_id: int, embedding_bytes: bytes) -> None:
+        """
+        Store a faceprint (embedding) for a detected face.
+
+        The embedding is a 128×float32 vector (512 bytes) computed by SFace.
+        We store it as a BLOB (Binary Large Object) — raw bytes in SQLite.
+
+        WHY BLOB AND NOT JSON?
+        A 128-float vector as JSON: "[0.0234, -0.1456, ...]" = ~1500 bytes
+        As a binary BLOB: 128 × 4 bytes = 512 bytes (3× smaller, instant to load)
+        For 100,000 faces, this saves ~100 MB of database size.
+
+        Args:
+            face_id:         The face's database ID.
+            embedding_bytes: The embedding as raw bytes (numpy .tobytes()).
+        """
+        self._conn.execute(
+            "UPDATE faces SET embedding = ? WHERE id = ?",
+            (embedding_bytes, face_id),
+        )
+        self._conn.commit()
+
+    def iter_faces_needing_embedding(self):
+        """
+        Yield all faces that have a thumbnail but no embedding yet.
+
+        A face needs an embedding if:
+        1. It has a thumb_path (aligned face crop exists on disk)
+        2. Its embedding column is NULL
+        3. Its det_score > 0 (not a sentinel/no-face marker)
+        """
+        cursor = self._conn.execute(
+            """
+            SELECT * FROM faces
+            WHERE thumb_path IS NOT NULL
+              AND embedding IS NULL
+              AND det_score > 0
+            ORDER BY id
+            """
+        )
+        while True:
+            row = cursor.fetchone()
+            if row is None:
+                break
+            yield row
+
+    def count_faces_needing_embedding(self) -> int:
+        """Count faces that still need embedding computation."""
+        cursor = self._conn.execute(
+            """
+            SELECT COUNT(*) FROM faces
+            WHERE thumb_path IS NOT NULL
+              AND embedding IS NULL
+              AND det_score > 0
+            """
+        )
+        return cursor.fetchone()[0]
+
+    def get_all_embeddings(self) -> list:
+        """
+        Get all face IDs and their embeddings for similarity search.
+
+        Returns a list of rows with: id, image_id, embedding, thumb_path, quality.
+        Only includes real faces (det_score > 0) that have embeddings.
+
+        WHAT IS THIS FOR?
+        When the user clicks a face and asks "Find Similar", we need to
+        compare that face's embedding against ALL other embeddings.
+        This loads them all into memory for fast numpy computation.
+        For 100k faces, this is ~50 MB of data — fits easily in RAM.
+        """
+        cursor = self._conn.execute(
+            """
+            SELECT id, image_id, embedding, thumb_path, quality, det_score
+            FROM faces
+            WHERE embedding IS NOT NULL AND det_score > 0
+            ORDER BY id
+            """
+        )
+        return cursor.fetchall()
+
+    def get_face_by_id(self, face_id: int):
+        """
+        Get a single face row by its ID.
+
+        Returns:
+            A sqlite3.Row object, or None if not found.
+        """
+        cursor = self._conn.execute(
+            "SELECT * FROM faces WHERE id = ?", (face_id,)
+        )
+        return cursor.fetchone()
+
+    # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
 
