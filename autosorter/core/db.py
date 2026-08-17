@@ -79,11 +79,77 @@ CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT
 );
+
+-- ═══════════════════════════════════════════════════════════════════
+-- FACES TABLE (added in M2)
+-- ═══════════════════════════════════════════════════════════════════
+-- Each row = one face detected in one image.
+-- An image can have 0, 1, or many faces (group photos).
+-- The relationship is: images (1) ──▶ (many) faces
+--
+-- REFERENCES images(id): this is a FOREIGN KEY — it means face.image_id
+-- MUST point to a valid row in the images table. If we delete an image,
+-- SQLite can automatically delete its faces too (ON DELETE CASCADE).
+CREATE TABLE IF NOT EXISTS faces (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+
+    -- Which image this face belongs to
+    image_id    INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
+
+    -- BOUNDING BOX: the rectangle around the face in the original image.
+    -- (x, y) = top-left corner; (w, h) = width and height in pixels.
+    -- Example: bbox_x=340, bbox_y=120, bbox_w=180, bbox_h=200
+    -- means "a 180×200 rectangle starting at pixel (340, 120)"
+    bbox_x      INTEGER NOT NULL,
+    bbox_y      INTEGER NOT NULL,
+    bbox_w      INTEGER NOT NULL,
+    bbox_h      INTEGER NOT NULL,
+
+    -- LANDMARKS: 5 facial key points stored as a JSON string.
+    -- Format: [[left_eye_x, left_eye_y], [right_eye_x, right_eye_y],
+    --          [nose_x, nose_y], [left_mouth_x, left_mouth_y],
+    --          [right_mouth_x, right_mouth_y]]
+    -- These are used to ALIGN the face (rotate so eyes are level)
+    -- before feeding it to the recognition model (M3).
+    landmarks   TEXT,
+
+    -- DETECTION CONFIDENCE: how sure YuNet is that this is a real face.
+    -- Range: 0.0 (no confidence) to 1.0 (very confident).
+    -- We filter out anything below 0.7 to avoid false positives
+    -- (e.g., a knot on a tree trunk that vaguely looks like a face).
+    det_score   REAL NOT NULL,
+
+    -- QUALITY SCORE: how good this face crop is for recognition.
+    -- Based on face size, sharpness, and how frontal the pose is.
+    -- Low-quality faces (tiny, blurry, extreme angle) are stored but
+    -- excluded from matching — they would poison the person's average.
+    quality     REAL,
+
+    -- Path to the 112×112 aligned face crop thumbnail.
+    -- This is the image fed to SFace for recognition in M3.
+    thumb_path  TEXT,
+
+    -- ── These columns stay NULL until later milestones ──
+    -- embedding: 128×float32 faceprint vector (filled in M3)
+    embedding   BLOB,
+    -- person_id: which person this face belongs to (filled in M4)
+    person_id   INTEGER,
+    -- How the assignment was made: 'auto' (AI decided), 'user' (human corrected),
+    -- or 'review' (confirmed via the review queue)
+    assign_source TEXT,
+    -- Confidence of the person assignment (0.0-1.0)
+    assign_conf REAL
+);
+
+-- INDEX: speeds up the most common query "get all faces for image X".
+-- Without this index, SQLite would scan EVERY face row. With it, instant lookup.
+CREATE INDEX IF NOT EXISTS idx_faces_image_id ON faces(image_id);
 """
 
-# Current schema version. If we ever change the table structure,
-# we increment this and write migration code.
-_SCHEMA_VERSION = "1"
+# Current schema version. Bumped from "1" to "2" because we added the faces table.
+# On existing databases, the CREATE TABLE IF NOT EXISTS handles the upgrade
+# gracefully — it only creates the table if it doesn't exist yet.
+_SCHEMA_VERSION = "2"
 
 
 class Database:
@@ -294,6 +360,167 @@ class Database:
             (thumb_path, width, height, image_id),
         )
         self._conn.commit()
+
+    # ------------------------------------------------------------------
+    # Face operations (M2)
+    # ------------------------------------------------------------------
+
+    def insert_face(
+        self,
+        image_id: int,
+        bbox_x: int,
+        bbox_y: int,
+        bbox_w: int,
+        bbox_h: int,
+        det_score: float,
+        *,
+        landmarks: Optional[str] = None,
+        quality: Optional[float] = None,
+        thumb_path: Optional[str] = None,
+    ) -> int:
+        """
+        Insert a detected face into the faces table.
+
+        Called by the face detection worker after YuNet finds a face.
+        Each face is linked to its parent image via image_id.
+
+        Returns:
+            The auto-generated face ID.
+        """
+        cursor = self._conn.execute(
+            """
+            INSERT INTO faces
+                (image_id, bbox_x, bbox_y, bbox_w, bbox_h,
+                 det_score, landmarks, quality, thumb_path)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (image_id, bbox_x, bbox_y, bbox_w, bbox_h,
+             det_score, landmarks, quality, thumb_path),
+        )
+        self._conn.commit()
+        return cursor.lastrowid  # type: ignore[return-value]
+
+    def get_faces_for_image(self, image_id: int) -> list:
+        """
+        Get all detected faces for a given image.
+
+        Returns:
+            A list of Row objects (dict-like), one per face.
+            Empty list if no faces were detected in this image.
+
+        Example:
+            faces = db.get_faces_for_image(42)
+            for face in faces:
+                print(f"Face at ({face['bbox_x']}, {face['bbox_y']}), "
+                      f"confidence={face['det_score']:.2f}")
+        """
+        cursor = self._conn.execute(
+            "SELECT * FROM faces WHERE image_id = ? ORDER BY id",
+            (image_id,),
+        )
+        return cursor.fetchall()
+
+    def count_faces(self) -> int:
+        """Count total faces detected across all images."""
+        cursor = self._conn.execute("SELECT COUNT(*) FROM faces")
+        return cursor.fetchone()[0]
+
+    def has_faces_detected(self, image_id: int) -> bool:
+        """
+        Check if face detection has already run on this image.
+
+        We check for ANY face rows (including zero-face results tracked
+        via a special marker). This prevents re-running detection on
+        images we've already processed.
+
+        For images with no faces, we store a marker in the images table
+        (face_count column) so we know detection was run but found nothing.
+        """
+        cursor = self._conn.execute(
+            "SELECT COUNT(*) FROM faces WHERE image_id = ?",
+            (image_id,),
+        )
+        return cursor.fetchone()[0] > 0
+
+    def iter_images_needing_detection(self):
+        """
+        Yield all processed images that haven't had face detection run yet.
+
+        An image needs detection if:
+        1. Its status is 'processed' (thumbnailing is done)
+        2. It has no rows in the faces table yet
+
+        Uses a LEFT JOIN to efficiently find images without face entries.
+
+        WHAT IS A LEFT JOIN?
+        Imagine two spreadsheets side by side:
+          - Left: images table
+          - Right: faces table
+        LEFT JOIN means: show ALL rows from the left (images), and for
+        each one, attach matching rows from the right (faces). If there's
+        no match, the right side is NULL.
+
+        So "WHERE f.id IS NULL" means "images that have NO faces at all".
+        """
+        cursor = self._conn.execute(
+            """
+            SELECT i.*
+            FROM images i
+            LEFT JOIN faces f ON f.image_id = i.id
+            WHERE i.status = 'processed' AND f.id IS NULL
+            ORDER BY i.id
+            """
+        )
+        while True:
+            row = cursor.fetchone()
+            if row is None:
+                break
+            yield row
+
+    def count_images_needing_detection(self) -> int:
+        """Count images that still need face detection."""
+        cursor = self._conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM images i
+            LEFT JOIN faces f ON f.image_id = i.id
+            WHERE i.status = 'processed' AND f.id IS NULL
+            """
+        )
+        return cursor.fetchone()[0]
+
+    def mark_no_faces(self, image_id: int) -> None:
+        """
+        Record that detection was run on this image but found zero faces.
+
+        We insert a sentinel row with det_score=-1 so that
+        iter_images_needing_detection() skips this image on re-runs.
+        Without this, we'd re-detect no-face images every time.
+        """
+        self._conn.execute(
+            """
+            INSERT INTO faces (image_id, bbox_x, bbox_y, bbox_w, bbox_h, det_score)
+            VALUES (?, 0, 0, 0, 0, -1.0)
+            """,
+            (image_id,),
+        )
+        self._conn.commit()
+
+    def get_all_images_with_thumbs(self) -> list:
+        """
+        Get all images that have thumbnails (for the photo grid).
+
+        Returns images ordered by ID, only those with status='processed'
+        and a valid thumb_path.
+        """
+        cursor = self._conn.execute(
+            """
+            SELECT * FROM images
+            WHERE status = 'processed' AND thumb_path IS NOT NULL
+            ORDER BY id
+            """
+        )
+        return cursor.fetchall()
 
     # ------------------------------------------------------------------
     # Lifecycle

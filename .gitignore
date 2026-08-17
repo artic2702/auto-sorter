@@ -9,6 +9,8 @@ dist/
 
 # App data (never commit user photo data)
 appdata/
+.autosorter/
+**/.autosorter/
 *.db
 *.db-wal
 *.db-shm

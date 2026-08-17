@@ -68,7 +68,7 @@ class TestDatabase:
         )
         row = cursor.fetchone()
         assert row is not None
-        assert row[0] == "1"
+        assert row[0] == "2"
         db.close()
 
     def test_upsert_insert(self, tmp_path: Path):
