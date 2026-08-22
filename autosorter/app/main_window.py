@@ -1,33 +1,38 @@
 """
-Main application window — M2: Scan + Face Detection + Thumbnail Grid + Photo Viewer.
+Main application window — M4: Scan + Detect + Identify People + People Panel.
 
-=== WHAT CHANGED FROM M1? ===
-M1 had: folder picker, scan button, progress labels.
-M2 adds:
-  1. "Detect Faces" button — appears after scan, runs YuNet on all images
-  2. Thumbnail grid — shows all scanned photos as clickable thumbnails
-  3. Click a thumbnail → opens PhotoViewer with face boxes drawn on the image
-  4. Detection progress — "Detecting faces: 42 / 58 images (127 faces found)"
+=== WHAT CHANGED FROM M3? ===
+M3 had: scan, face detection + embedding, thumbnail grid, photo viewer, find similar.
+M4 adds:
+  1. "Identify People" button — clusters faces into person groups
+  2. People panel — shows person cards with face thumbs, rename capability
+  3. Identity progress — "Identifying people: 42 / 127 faces (8 people found)"
 
-=== UI LAYOUT (M2) ===
+=== UI LAYOUT (M4) ===
 ┌─────────────────────────────────────────────────────┐
 │  Auto-Sorter 0.1.0                                  │
 ├─────────────────────────────────────────────────────┤
 │ 📁 Photo folder: D:\\Photos               [Browse]  │
 │ 📁 Data folder:  (auto)                   [Browse]  │
 │                                                     │
-│ [▶ Start Scan] [🔍 Detect Faces]                    │
+│ [▶ Start Scan] [🔍 Detect Faces] [👤 Identify]     │
 │                                                     │
-│ Progress: Detecting faces 42/58 (127 faces)         │
-│ ████████████████████░░░░░░░░  72%                   │
+│ Progress: Identifying 42/127 faces (8 people)       │
+│ ████████████████████░░░░░░░░  33%                   │
 │                                                     │
-│ ┌─────┐ ┌─────┐ ┌─────┐ ┌─────┐ ┌─────┐ ┌─────┐  │
-│ │thumb│ │thumb│ │thumb│ │thumb│ │thumb│ │thumb│  │
-│ │  1  │ │  2  │ │  3  │ │  4  │ │  5  │ │  6  │  │
-│ └─────┘ └─────┘ └─────┘ └─────┘ └─────┘ └─────┘  │
-│ ┌─────┐ ┌─────┐ ┌─────┐ ...                        │
+│ ┌──── People (8 found) ────────────────────────┐    │
+│ │ ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐        │    │
+│ │ │(face)│ │(face)│ │(face)│ │(face)│        │    │
+│ │ │Arnav │ │ Mom  │ │Per.3 │ │Per.4 │        │    │
+│ │ │623 ph│ │412 ph│ │89 ph │ │45 ph │        │    │
+│ │ └──────┘ └──────┘ └──────┘ └──────┘        │    │
+│ └──────────────────────────────────────────────┘    │
 │                                                     │
-│ Status: ✅ Detection complete: 127 faces in 58 imgs │
+│ ┌─────┐ ┌─────┐ ┌─────┐ ┌─────┐ ┌─────┐          │
+│ │thumb│ │thumb│ │thumb│ │thumb│ │thumb│ ...        │
+│ └─────┘ └─────┘ └─────┘ └─────┘ └─────┘          │
+│                                                     │
+│ Status: ✅ 8 people found. Click a card to view.   │
 └─────────────────────────────────────────────────────┘
 
 === NEW CONCEPT: QFlowLayout (custom layout) ===
@@ -56,8 +61,10 @@ from PySide6.QtWidgets import (
 from autosorter import __version__
 from autosorter.core.db import Database
 from autosorter.core.detect_worker import DetectWorker
+from autosorter.core.identity_worker import IdentityWorker
 from autosorter.core.scan_worker import ScanWorker
 from autosorter.app.photo_viewer import PhotoViewer
+from autosorter.app.people_panel import PeoplePanel
 
 
 # Thumbnail display size in the grid (pixels)
@@ -123,7 +130,7 @@ class ClickableThumb(QLabel):
 
 
 class MainWindow(QMainWindow):
-    """The main application window with scan, detection, and photo grid."""
+    """The main application window with scan, detection, identity, and photo grid."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -137,6 +144,7 @@ class MainWindow(QMainWindow):
         self._data_folder: Path | None = None
         self._worker: ScanWorker | None = None
         self._detect_worker: DetectWorker | None = None
+        self._identity_worker: IdentityWorker | None = None
         self._viewers: list = []  # Keep references to open PhotoViewer windows
 
         self._build_ui()
@@ -211,6 +219,16 @@ class MainWindow(QMainWindow):
         self._detect_btn.setVisible(False)  # Hidden until scan completes
         btn_row.addWidget(self._detect_btn)
 
+        # NEW in M4: Identify People button
+        self._identify_btn = QPushButton("👤  Identify People")
+        self._identify_btn.setFixedHeight(36)
+        self._identify_btn.setStyleSheet(
+            "font-size: 14px; font-weight: bold; padding: 4px 20px;"
+        )
+        self._identify_btn.clicked.connect(self._start_identity)
+        self._identify_btn.setVisible(False)  # Hidden until detection completes
+        btn_row.addWidget(self._identify_btn)
+
         self._cancel_btn = QPushButton("Cancel")
         self._cancel_btn.setFixedHeight(36)
         self._cancel_btn.clicked.connect(self._cancel_action)
@@ -232,6 +250,14 @@ class MainWindow(QMainWindow):
         self._thumb_label = QLabel("")
         self._thumb_label.setVisible(False)
         layout.addWidget(self._thumb_label)
+
+        # --- People panel (M4) ---
+        self._people_panel: PeoplePanel | None = None
+        self._people_container = QWidget()
+        self._people_container.setVisible(False)
+        people_layout = QVBoxLayout(self._people_container)
+        people_layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self._people_container)
 
         # --- Thumbnail grid (inside a scroll area) ---
         self._grid_scroll = QScrollArea()
@@ -300,6 +326,7 @@ class MainWindow(QMainWindow):
 
         self._start_btn.setEnabled(False)
         self._detect_btn.setVisible(False)
+        self._identify_btn.setVisible(False)
         self._cancel_btn.setVisible(True)
         self._progress_bar.setVisible(True)
         self._progress_bar.setRange(0, 0)
@@ -342,9 +369,11 @@ class MainWindow(QMainWindow):
             self._worker.cancel()
         if self._detect_worker:
             self._detect_worker.cancel()
+        if self._identity_worker:
+            self._identity_worker.cancel()
         self._cancel_btn.setEnabled(False)
         self._cancel_btn.setText("Cancelling…")
-        self._status_label.setText("Cancelling… (finishing current file)")
+        self._status_label.setText("Cancelling… (finishing current item)")
 
     # ==================================================================
     # Signal handlers — Scan (M1)
@@ -407,11 +436,15 @@ class MainWindow(QMainWindow):
         self._progress_bar.setVisible(False)
         self._scan_label.setVisible(False)
 
+        # Show Identify People button
+        self._identify_btn.setVisible(True)
+        self._identify_btn.setEnabled(True)
+
         error_text = f", {errors} errors" if errors else ""
         self._status_label.setText(
-            f"✅ Complete: {total_faces} faces, {total_embedded} embeddings "
+            f"✅ Detection complete: {total_faces} faces, {total_embedded} embeddings "
             f"in {total_images} images{error_text}. "
-            f"Click a photo → click a face box → Find Similar!"
+            f"Click 'Identify People' to discover people."
         )
         self._detect_worker = None
 
@@ -430,6 +463,7 @@ class MainWindow(QMainWindow):
         )
         self._worker = None
         self._detect_worker = None
+        self._identity_worker = None
 
     # ==================================================================
     # Thumbnail Grid (M2)
@@ -500,3 +534,80 @@ class MainWindow(QMainWindow):
         viewer.show()
         # Keep a reference so the window doesn't get garbage-collected
         self._viewers.append(viewer)
+
+    # ==================================================================
+    # Identity control (M4)
+    # ==================================================================
+
+    def _start_identity(self) -> None:
+        """Launch face clustering to discover people."""
+        if self._data_folder is None:
+            return
+
+        self._identity_worker = IdentityWorker(self._data_folder)
+        self._identity_worker.progress.connect(self._on_identity_progress)
+        self._identity_worker.finished.connect(self._on_identity_finished)
+        self._identity_worker.error.connect(self._on_error)
+
+        self._start_btn.setEnabled(False)
+        self._detect_btn.setEnabled(False)
+        self._identify_btn.setEnabled(False)
+        self._cancel_btn.setVisible(True)
+        self._progress_bar.setVisible(True)
+        self._progress_bar.setRange(0, 0)
+        self._scan_label.setVisible(True)
+        self._scan_label.setText("Identifying people…")
+        self._thumb_label.setVisible(False)
+        self._status_label.setText("Running face clustering…")
+
+        self._identity_worker.start()
+
+    # ==================================================================
+    # Signal handlers — Identity (M4)
+    # ==================================================================
+
+    def _on_identity_progress(self, done: int, total: int,
+                              persons: int) -> None:
+        self._progress_bar.setRange(0, total)
+        self._progress_bar.setValue(done)
+        self._scan_label.setText(
+            f"Identifying people: {done}/{total} faces  "
+            f"({persons} people found)"
+        )
+
+    def _on_identity_finished(self, total_assigned: int,
+                              total_persons: int) -> None:
+        self._start_btn.setEnabled(True)
+        self._detect_btn.setEnabled(True)
+        self._identify_btn.setEnabled(True)
+        self._identify_btn.setText("👤  Re-Identify")
+        self._cancel_btn.setVisible(False)
+        self._cancel_btn.setEnabled(True)
+        self._cancel_btn.setText("Cancel")
+        self._progress_bar.setVisible(False)
+        self._scan_label.setVisible(False)
+
+        self._status_label.setText(
+            f"✅ {total_persons} people found from {total_assigned} faces. "
+            f"Click a person card to view or rename."
+        )
+        self._identity_worker = None
+
+        # Show the people panel
+        self._show_people_panel()
+
+    # ==================================================================
+    # People Panel (M4)
+    # ==================================================================
+
+    def _show_people_panel(self) -> None:
+        """Create or refresh the people panel."""
+        if self._data_folder is None:
+            return
+
+        if self._people_panel is None:
+            self._people_panel = PeoplePanel(self._data_folder)
+            self._people_container.layout().addWidget(self._people_panel)
+
+        self._people_panel.load_persons()
+        self._people_container.setVisible(True)

@@ -144,12 +144,54 @@ CREATE TABLE IF NOT EXISTS faces (
 -- INDEX: speeds up the most common query "get all faces for image X".
 -- Without this index, SQLite would scan EVERY face row. With it, instant lookup.
 CREATE INDEX IF NOT EXISTS idx_faces_image_id ON faces(image_id);
+
+-- Index for looking up faces by person (used in People panel and clustering)
+CREATE INDEX IF NOT EXISTS idx_faces_person_id ON faces(person_id);
+
+-- ═══════════════════════════════════════════════════════════════════
+-- PERSONS TABLE (added in M4)
+-- ═══════════════════════════════════════════════════════════════════
+-- Each row = one discovered person (a cluster of similar faces).
+-- Initially named "Person 1", "Person 2", etc. The user renames them.
+--
+-- A person IS a cluster. Renaming just sets display_name.
+-- The centroid (average embedding) is the mathematical center of the
+-- cluster — used to compare new faces against known people.
+CREATE TABLE IF NOT EXISTS persons (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+
+    -- Display name shown in the UI. Starts as "Person 1", user renames.
+    display_name    TEXT NOT NULL,
+
+    -- 0 = auto-generated name, 1 = user has renamed this person.
+    -- User-named persons are treated with more care (never auto-merged).
+    name_is_user_set INTEGER DEFAULT 0,
+
+    -- The face ID used as the thumbnail on the person card.
+    -- Automatically set to the highest-quality face.
+    cover_face_id   INTEGER,
+
+    -- Average embedding of all faces in this cluster (128×f32 = 512 bytes).
+    -- Updated incrementally as new faces are assigned.
+    centroid        BLOB,
+
+    -- Cached count of faces assigned to this person.
+    -- Denormalized for performance (avoids COUNT(*) on every card render).
+    face_count      INTEGER DEFAULT 0,
+
+    -- If this person was merged into another, stores the target person ID.
+    -- NULL = not merged. Merged persons are hidden from the UI. (M5)
+    merged_into     INTEGER,
+
+    -- 1 = user has hidden this person from the People panel.
+    hidden          INTEGER DEFAULT 0
+);
 """
 
-# Current schema version. Bumped from "1" to "2" because we added the faces table.
+# Current schema version. Bumped to "3" because we added the persons table (M4).
 # On existing databases, the CREATE TABLE IF NOT EXISTS handles the upgrade
 # gracefully — it only creates the table if it doesn't exist yet.
-_SCHEMA_VERSION = "2"
+_SCHEMA_VERSION = "3"
 
 
 class Database:
@@ -618,6 +660,232 @@ class Database:
             "SELECT * FROM faces WHERE id = ?", (face_id,)
         )
         return cursor.fetchone()
+
+    # ------------------------------------------------------------------
+    # Person operations (M4)
+    # ------------------------------------------------------------------
+
+    def insert_person(
+        self,
+        display_name: str,
+        centroid_bytes: bytes,
+        face_count: int = 0,
+        cover_face_id: Optional[int] = None,
+    ) -> int:
+        """
+        Create a new person (cluster) in the database.
+
+        A person starts as "Person 1", "Person 2", etc. The centroid is
+        the average faceprint of all faces in the cluster — initially
+        just the seed face's embedding.
+
+        Args:
+            display_name:   The name shown in the UI (e.g., "Person 1").
+            centroid_bytes: The 128×f32 centroid embedding as raw bytes.
+            face_count:     Initial face count (usually 1 for a new person).
+            cover_face_id:  The face to use as the card thumbnail.
+
+        Returns:
+            The auto-generated person ID.
+        """
+        cursor = self._conn.execute(
+            """
+            INSERT INTO persons
+                (display_name, centroid, face_count, cover_face_id)
+            VALUES (?, ?, ?, ?)
+            """,
+            (display_name, centroid_bytes, face_count, cover_face_id),
+        )
+        self._conn.commit()
+        return cursor.lastrowid  # type: ignore[return-value]
+
+    def update_person_centroid(
+        self,
+        person_id: int,
+        centroid_bytes: bytes,
+        face_count: int,
+    ) -> None:
+        """
+        Update a person's centroid and face count after a new face is assigned.
+
+        The centroid is recomputed incrementally by the clustering engine
+        and stored here. face_count is the new total (not a delta).
+        """
+        self._conn.execute(
+            """
+            UPDATE persons SET centroid = ?, face_count = ?
+            WHERE id = ?
+            """,
+            (centroid_bytes, face_count, person_id),
+        )
+        self._conn.commit()
+
+    def rename_person(self, person_id: int, new_name: str) -> None:
+        """
+        Rename a person and mark the name as user-set.
+
+        User-set names are treated with more care:
+        - They are never overwritten by auto-naming
+        - In M5, user-named persons are never auto-merged
+
+        Args:
+            person_id: The person to rename.
+            new_name:  The new display name.
+        """
+        self._conn.execute(
+            """
+            UPDATE persons SET display_name = ?, name_is_user_set = 1
+            WHERE id = ?
+            """,
+            (new_name, person_id),
+        )
+        self._conn.commit()
+
+    def assign_face_to_person(
+        self,
+        face_id: int,
+        person_id: int,
+        source: str = "auto",
+        confidence: float = 0.0,
+    ) -> None:
+        """
+        Assign a face to a person.
+
+        Args:
+            face_id:    The face to assign.
+            person_id:  The person to assign it to.
+            source:     How the assignment was made:
+                        'auto' = clustering algorithm decided
+                        'user' = human explicitly assigned (M5)
+                        'review' = confirmed via review queue (M5)
+            confidence: The similarity score that led to this assignment.
+        """
+        self._conn.execute(
+            """
+            UPDATE faces SET person_id = ?, assign_source = ?, assign_conf = ?
+            WHERE id = ?
+            """,
+            (person_id, source, confidence, face_id),
+        )
+        self._conn.commit()
+
+    def get_all_persons(self) -> list:
+        """
+        Get all visible, non-merged persons, ordered by face count (most first).
+
+        This is the main query for the People panel — shows person cards
+        sorted by how many photos they appear in.
+        """
+        cursor = self._conn.execute(
+            """
+            SELECT * FROM persons
+            WHERE hidden = 0 AND merged_into IS NULL
+            ORDER BY face_count DESC
+            """
+        )
+        return cursor.fetchall()
+
+    def get_person_by_id(self, person_id: int):
+        """
+        Get a single person row by ID.
+
+        Returns:
+            A sqlite3.Row object, or None if not found.
+        """
+        cursor = self._conn.execute(
+            "SELECT * FROM persons WHERE id = ?", (person_id,)
+        )
+        return cursor.fetchone()
+
+    def get_faces_for_person(self, person_id: int) -> list:
+        """
+        Get all faces assigned to a person, ordered by quality (best first).
+
+        Used by the People panel to show face thumbnails for a person,
+        and by the clustering engine to pick the cover face.
+        """
+        cursor = self._conn.execute(
+            """
+            SELECT * FROM faces
+            WHERE person_id = ? AND det_score > 0
+            ORDER BY quality DESC
+            """,
+            (person_id,),
+        )
+        return cursor.fetchall()
+
+    def count_unassigned_faces(self) -> int:
+        """
+        Count faces that have embeddings but haven't been assigned to a person.
+
+        These are the faces that need clustering in M4.
+        Only counts real faces (det_score > 0) with valid embeddings.
+        """
+        cursor = self._conn.execute(
+            """
+            SELECT COUNT(*) FROM faces
+            WHERE embedding IS NOT NULL
+              AND person_id IS NULL
+              AND det_score > 0
+            """
+        )
+        return cursor.fetchone()[0]
+
+    def iter_unassigned_faces(self):
+        """
+        Yield faces that need clustering: have embeddings but no person.
+
+        Ordered by QUALITY DESCENDING — best faces first. This is critical
+        because high-quality faces make better cluster seeds (more reliable
+        centroids). Processing the best faces first means clusters start
+        with strong anchors.
+        """
+        cursor = self._conn.execute(
+            """
+            SELECT * FROM faces
+            WHERE embedding IS NOT NULL
+              AND person_id IS NULL
+              AND det_score > 0
+            ORDER BY quality DESC
+            """
+        )
+        while True:
+            row = cursor.fetchone()
+            if row is None:
+                break
+            yield row
+
+    def get_next_person_number(self) -> int:
+        """
+        Get the next person number for auto-naming ("Person N").
+
+        Returns the count of existing persons + 1, so names are sequential.
+        """
+        cursor = self._conn.execute("SELECT COUNT(*) FROM persons")
+        return cursor.fetchone()[0] + 1
+
+    def update_person_cover(self, person_id: int, face_id: int) -> None:
+        """
+        Set the cover face for a person card.
+
+        The cover face is the thumbnail shown on the person card in the
+        People panel. We pick the highest-quality face automatically.
+        """
+        self._conn.execute(
+            "UPDATE persons SET cover_face_id = ? WHERE id = ?",
+            (face_id, person_id),
+        )
+        self._conn.commit()
+
+    def count_persons(self) -> int:
+        """Count all visible, non-merged persons."""
+        cursor = self._conn.execute(
+            """
+            SELECT COUNT(*) FROM persons
+            WHERE hidden = 0 AND merged_into IS NULL
+            """
+        )
+        return cursor.fetchone()[0]
 
     # ------------------------------------------------------------------
     # Lifecycle

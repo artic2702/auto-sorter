@@ -8,7 +8,7 @@
 - [x] **M1** — Scan folder → SQLite + thumbnails + live-count UI
 - [x] **M2** — Face detection (worker pool) + face thumbs + boxes in viewer
 - [x] **M3** — Faceprints (align + SFace) stored; dev "find similar" panel
-- [ ] **M4** — **People discovery + rename** ← first full vertical slice
+- [x] **M4** — People discovery + rename (incremental centroid clustering, person cards, inline rename)
 - [ ] **M5** — Corrections: merge, not-this-person, reassign, box-click assign
 - [ ] **M6** — Resume/incremental: kill-and-relaunch resume, new-photos-only, moved-file reattach
 - [ ] **M7** — Albums (Group/Unknown/Review/Text&Docs) + optional Export
