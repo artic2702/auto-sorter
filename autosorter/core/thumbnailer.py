@@ -22,11 +22,27 @@ This two-step approach works for ALL filenames on ALL Windows systems.
 """
 
 import hashlib
+import io
+import os
 from pathlib import Path
 from typing import Optional, Tuple
 
 import cv2
 import numpy as np
+from PIL import Image
+
+# Register HEIF opener so PIL Image.open() automatically supports .heic / .heif
+try:
+    import pillow_heif
+    pillow_heif.register_heif_opener()
+except ImportError:
+    pass
+
+try:
+    import rawpy
+except ImportError:
+    rawpy = None  # type: ignore[assignment]
+
 
 # Maximum dimension for thumbnails (pixels).
 # The thumbnail will fit inside a 256×256 box while keeping aspect ratio.
@@ -36,14 +52,69 @@ THUMB_MAX = 256
 # quality and file size. Below 70, you start seeing visible artifacts.
 THUMB_QUALITY = 85
 
+# File extensions recognized as Camera RAW
+_RAW_EXTENSIONS = frozenset({
+    ".cr2", ".cr3",
+    ".nef", ".nrw",
+    ".arw", ".srf", ".sr2",
+    ".dng",
+    ".raf",
+    ".orf",
+    ".rw2",
+    ".pef",
+})
+
+
+def _decode_raw_image(raw_bytes: bytes) -> Optional[np.ndarray]:
+    """
+    Decode a camera RAW image (.CR2, .NEF, .ARW, .DNG, etc.).
+
+    LOW-END PC OPTIMIZATION:
+    Instead of doing slow Bayer demosaicing on a 30-60 MB sensor dump
+    (which takes 2-4 seconds and spikes RAM), we extract the embedded
+    full-resolution / preview JPEG stored inside the RAW file by the camera.
+    This extraction takes ~5 ms and uses virtually zero extra RAM.
+    """
+    if rawpy is None:
+        return None
+
+    try:
+        with rawpy.imread(io.BytesIO(raw_bytes)) as raw:
+            # Fast path A: Extract embedded JPEG/Bitmap preview (instant: ~5 ms)
+            try:
+                thumb = raw.extract_thumb()
+                if thumb.format == rawpy.ThumbFormat.JPEG:
+                    thumb_bytes = np.frombuffer(thumb.data, dtype=np.uint8)
+                    img = cv2.imdecode(thumb_bytes, cv2.IMREAD_COLOR)
+                    if img is not None:
+                        return img
+                elif thumb.format == rawpy.ThumbFormat.BITMAP:
+                    return cv2.cvtColor(thumb.data, cv2.COLOR_RGB2BGR)
+            except Exception:
+                pass  # Fallback to postprocessing if no thumbnail exists
+
+            # Fallback path B: Fast half-size demosaic if no embedded preview
+            rgb = raw.postprocess(
+                half_size=True,
+                use_camera_wb=True,
+                no_auto_bright=True,
+                output_color=rawpy.ColorSpace.sRGB,
+            )
+            return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+    except Exception:
+        return None
+
 
 def _read_image_safe(file_path: str) -> Optional[np.ndarray]:
     """
-    Read an image file in a way that handles Unicode Windows paths.
+    Read an image file in a way that handles Unicode Windows paths,
+    standard formats, HEIC/HEIF, and Camera RAW formats.
 
-    This is the CORRECT way to load images on Windows:
-      1. np.fromfile() reads raw bytes from disk (handles any filename)
-      2. cv2.imdecode() converts those bytes into a pixel array
+    Decoding pipeline:
+      1. np.fromfile() reads raw bytes from disk (handles Unicode paths)
+      2. Fast path: cv2.imdecode() for JPEG, PNG, WebP, BMP, TIFF
+      3. RAW path: rawpy embedded preview extraction for .CR2, .NEF, .ARW, .DNG, etc.
+      4. Fallback: PIL Image.open() (with pillow-heif) for .heic, .heif, etc.
 
     Args:
         file_path: Full path to the image file.
@@ -51,22 +122,41 @@ def _read_image_safe(file_path: str) -> Optional[np.ndarray]:
     Returns:
         A NumPy array of shape (height, width, 3) in BGR color order,
         or None if the file couldn't be decoded (corrupt, unsupported format).
-
-    WHAT IS BGR?
-    OpenCV uses BGR (Blue-Green-Red) instead of the more common RGB.
-    This is a historical accident from 1990s camera hardware. It doesn't
-    matter for our purposes — we just need to be consistent.
     """
     try:
-        # Step 1: Read raw bytes from disk
-        # np.fromfile reads the file as a flat array of bytes (uint8 = 0-255)
+        # Step 1: Read raw bytes from disk (Unicode path safe)
         raw_bytes = np.fromfile(file_path, dtype=np.uint8)
+        if len(raw_bytes) == 0:
+            return None
 
-        # Step 2: Decode bytes into an image
-        # cv2.IMREAD_COLOR = load as 3-channel BGR color image
-        # Even if the original is grayscale, we get 3 channels (for consistency)
-        img = cv2.imdecode(raw_bytes, cv2.IMREAD_COLOR)
-        return img  # None if decoding failed (corrupt file)
+        # Check extension
+        _, ext = os.path.splitext(file_path)
+        ext_lower = ext.lower()
+
+        # Step 2: Fast path for standard formats (OpenCV)
+        if ext_lower not in _RAW_EXTENSIONS and ext_lower not in {".heic", ".heif"}:
+            img = cv2.imdecode(raw_bytes, cv2.IMREAD_COLOR)
+            if img is not None:
+                return img
+
+        # Step 3: Camera RAW files (.CR2, .NEF, .ARW, .DNG, etc.)
+        if ext_lower in _RAW_EXTENSIONS:
+            raw_img = _decode_raw_image(raw_bytes.tobytes())
+            if raw_img is not None:
+                return raw_img
+
+        # Step 4: HEIC/HEIF and other formats via PIL (handles pillow-heif)
+        try:
+            with Image.open(io.BytesIO(raw_bytes.tobytes())) as pil_img:
+                if pil_img.mode != "RGB":
+                    pil_img = pil_img.convert("RGB")
+                rgb_array = np.array(pil_img)
+                return cv2.cvtColor(rgb_array, cv2.COLOR_RGB2BGR)
+        except Exception:
+            pass
+
+        # Final attempt: try cv2.imdecode in case file had unusual extension
+        return cv2.imdecode(raw_bytes, cv2.IMREAD_COLOR)
 
     except (OSError, ValueError):
         # File doesn't exist, permission denied, or invalid data

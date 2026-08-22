@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from PySide6.QtCore import QRect, Qt
-from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPen, QPixmap
+from PySide6.QtGui import QColor, QImage, QMouseEvent, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -34,6 +34,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from autosorter.core.thumbnailer import _read_image_safe
 
 
 # Colors for face bounding boxes (cycle through these for multiple faces)
@@ -182,7 +184,18 @@ class PhotoViewer(QWidget):
 
     def _load_and_draw(self) -> None:
         """Load the image, draw face overlays, and display it."""
-        pixmap = QPixmap(self._image_path)
+        img = _read_image_safe(self._image_path)
+        if img is None:
+            self._image_label.setText("❌ Could not load image")
+            return
+
+        h, w = img.shape[:2]
+        bytes_per_line = 3 * w
+        # QImage needs the buffer to remain valid; copy() ensures memory safety
+        qimg = QImage(
+            img.data, w, h, bytes_per_line, QImage.Format.Format_BGR888
+        ).copy()
+        pixmap = QPixmap.fromImage(qimg)
 
         if pixmap.isNull():
             self._image_label.setText("❌ Could not load image")

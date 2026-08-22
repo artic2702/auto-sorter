@@ -51,11 +51,30 @@ class ScanResult(NamedTuple):
 # - .bmp: old Windows format, some scanners still use it
 # - .tiff/.tif: professional photography, scanners
 # - .webp: modern Google format, increasingly common
-# - .heic/.heif: iPhone photos (added for detection, actual decoding comes later)
+# - .heic/.heif: iPhone & modern mobile photos
+# - Camera RAW formats:
+#     - .cr2, .cr3 (Canon)
+#     - .nef, .nrw (Nikon)
+#     - .arw, .srf, .sr2 (Sony)
+#     - .dng (Adobe / Leica / Google Pixel RAW)
+#     - .raf (Fujifilm)
+#     - .orf (Olympus)
+#     - .rw2 (Panasonic)
+#     - .pef (Pentax)
 IMAGE_EXTENSIONS = frozenset({
+    # Standard Web / Mobile formats
     ".jpg", ".jpeg", ".png", ".bmp",
     ".tiff", ".tif", ".webp",
     ".heic", ".heif",
+    # Camera RAW formats
+    ".cr2", ".cr3",
+    ".nef", ".nrw",
+    ".arw", ".srf", ".sr2",
+    ".dng",
+    ".raf",
+    ".orf",
+    ".rw2",
+    ".pef",
 })
 
 
