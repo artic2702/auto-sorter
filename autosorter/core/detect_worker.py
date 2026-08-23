@@ -53,14 +53,18 @@ class DetectWorker(QThread):
     finished = Signal(int, int, int, int)   # (images, faces, embedded, errors)
     error = Signal(str)                     # (error_message)
 
-    def __init__(self, data_folder: Path) -> None:
+    def __init__(self, data_folder: Path, *, max_dimension: int = 1280) -> None:
         """
         Args:
             data_folder: The .autosorter directory containing library.db
                          and where face_thumbs/ will be created.
+            max_dimension: Maximum image dimension for face detection.
+                          Images larger than this are downscaled before YuNet
+                          inference. Default 1280 keeps RAM under ~400MB.
         """
         super().__init__()
         self._data_folder = data_folder
+        self._max_dimension = max_dimension
         self._cancel = False
 
     def cancel(self) -> None:
@@ -109,8 +113,8 @@ class DetectWorker(QThread):
                     self.progress.emit(done, total, total_faces, total_embedded)
                     continue
 
-                # === STEP 1: Detect faces (YuNet) ===
-                faces = detector.detect(image)
+                # === STEP 1: Detect faces (YuNet with 3-stage filtering) ===
+                faces = detector.detect(image, max_dimension=self._max_dimension)
 
                 if len(faces) == 0:
                     db.mark_no_faces(image_id)

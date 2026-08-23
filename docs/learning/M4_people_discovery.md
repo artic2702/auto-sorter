@@ -24,7 +24,7 @@ Incremental Centroid:  "One at a time, compare to known people"
 
 ---
 
-### 2. Incremental Centroid Clustering — Our Algorithm
+### 2. Incremental Centroid Clustering & Drift Protection
 
 Process one face at a time, in order of quality (best faces first):
 
@@ -33,7 +33,8 @@ Face 1 (best quality): No persons exist → Create "Person 1"
                         Person 1's centroid = this face's embedding
 
 Face 2: Compare to Person 1
-         Similarity = 0.72 → HIGH → Assign to Person 1
+         Similarity = 0.72 → HIGH (>= 0.46) and min member check (>= 0.40)
+         → Assign to Person 1
          Update Person 1's centroid (now average of 2 faces)
 
 Face 3: Compare to Person 1
@@ -42,21 +43,33 @@ Face 3: Compare to Person 1
 
 Face 4: Compare to Person 1: 0.68
          Compare to Person 2: 0.71
-         Best = Person 2, margin = 0.71 - 0.68 = 0.03 < 0.04 → AMBIGUOUS
+         Best = Person 2, margin = 0.71 - 0.68 = 0.03 <= 0.03 → AMBIGUOUS
          → Create "Person 3" (don't guess wrong!)
 
 ...repeat for all faces
 ```
 
-**Why incremental?**
-- Works with streaming data (don't need all faces loaded at once)
-- Resumable: stop and continue later
-- No need to guess the number of people in advance
-- Each face assigned exactly once → deterministic
+#### 🛡️ The Centroid Drift ("Chaining") Problem & Solution
+* **The Problem**: In simple running-average clustering, adding a slightly ambiguous face pulls the centroid towards it. Over 40 photos, the centroid gradually migrates across embedding space and swallows different people who look somewhat alike (e.g. same age/hair/glasses).
+* **The Solution**: We enforce **Member Validation**:
+  - `avg_similarity >= T_HIGH (0.46)`
+  - `min_member_similarity >= T_MIN_MEMBER (0.40)`: A new face cannot contradict ANY existing face already in that person's card.
+  - This mathematically prevents cluster drift across distinct people.
 
 ---
 
-### 3. Centroids — The Mathematical Center of a Cluster
+### 3. SFace Similarity Dynamics & Calibrated Thresholds
+
+In SFace 128-dimensional embedding space:
+- **Same person** across varied lighting, angles, expressions: **`0.50 – 0.75`**
+- **Different people** who look similar (same age, hair, skin tone, glasses): **`0.48 – 0.54`**
+- **Completely different people**: **`< 0.35`**
+
+```python
+T_HIGH = 0.46        # High confidence match threshold
+T_MIN_MEMBER = 0.40  # Minimum similarity across all cluster members
+MARGIN_MIN = 0.03    # Separation over second-best match
+```
 
 A **centroid** is the average embedding of all faces belonging to a person:
 

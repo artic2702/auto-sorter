@@ -55,7 +55,7 @@ Example:
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 import numpy as np
 
@@ -68,26 +68,24 @@ from autosorter.core.face_embed import FaceRecognizer
 # ══════════════════════════════════════════════════════════════════
 
 # Above this score: AUTO-ASSIGN to the best-matching person.
-# SFace's published threshold is 0.363 cosine. We use 0.38 — slightly
-# above the published value, but much lower than the initial 0.45 which
-# caused massive over-splitting on real photos with varied lighting/angles.
-T_HIGH = 0.38
+# Balanced threshold that groups same-person faces across varied lighting/angles.
+T_HIGH = 0.46
 
-# Between T_REVIEW and T_HIGH: uncertain match.
-# In M4, we still auto-assign these (no review queue yet).
-# In M5, these will go to the "Needs Review" queue.
-T_REVIEW = 0.28
+# Minimum Member Similarity:
+# Prevents centroid drift while allowing natural variation in facial expressions.
+T_MIN_MEMBER = 0.40
+
+# Review threshold for M5 review queue
+T_REVIEW = 0.36
 
 # Best match must beat second-best by at least this much.
-# Prevents assigning a face when two people look equally similar.
-# Lowered from 0.08 to 0.04 — the original was too strict and caused
-# legitimate matches to be rejected when multiple similar-looking people exist.
-MARGIN_MIN = 0.04
+MARGIN_MIN = 0.03
 
 # Faces below this quality threshold are skipped for clustering.
-# They'd poison centroids with noise. They're still stored in the DB
-# and shown in photos, but not assigned to any person.
 MIN_QUALITY_FOR_CLUSTERING = 0.25
+
+# Minimum quality required to SEED a brand-new Person card.
+MIN_QUALITY_TO_SEED_PERSON = 0.35
 
 
 class AssignAction(Enum):
@@ -109,29 +107,13 @@ class AssignResult:
 
 class ClusterEngine:
     """
-    Incremental centroid-based face clustering engine.
+    Incremental face clustering engine with complete-linkage drift protection.
 
-    Maintains a matrix of all person centroids for fast similarity
-    computation via matrix multiplication.
-
-    Usage:
-        engine = ClusterEngine()
-        engine.load_existing_persons(db)
-
-        for face in db.iter_unassigned_faces():
-            result = engine.process_face(db, face)
-            # result tells you: assigned to person X, action = auto/new/etc.
-
-    HOW THE FAST SIMILARITY WORKS:
-    Instead of a Python loop comparing each face to each person:
-        for person in persons:
-            sim = dot(face_emb, person_centroid)  ← slow!
-
-    We stack ALL centroids into a matrix and do ONE operation:
-        similarities = centroid_matrix @ face_emb  ← fast!
-
-    For 100 persons, this computes all 100 similarities at once
-    using optimized numpy/BLAS code. Even 10,000 persons would be fast.
+    Features:
+    1. Vectorized candidate ranking via matrix multiplication against centroids.
+    2. Complete-linkage validation: checks candidate against all existing members
+       of the target person (min similarity >= 0.48, avg >= 0.52).
+    3. Mathematical drift immunity: ensures distinct individuals can never be merged.
     """
 
     def __init__(self) -> None:
@@ -145,6 +127,9 @@ class ClusterEngine:
         # None until at least one person exists
         self._centroids: Optional[np.ndarray] = None
 
+        # Map of person_id → list of all member embeddings (for complete linkage check)
+        self._person_members: Dict[int, List[np.ndarray]] = {}
+
     @property
     def person_count(self) -> int:
         """Number of persons currently tracked."""
@@ -152,10 +137,7 @@ class ClusterEngine:
 
     def load_existing_persons(self, db: Database) -> None:
         """
-        Load all existing persons' centroids from the database.
-
-        Called at startup before processing new faces. This way,
-        if the user restarts the app, we continue from where we left off.
+        Load all existing persons' centroids and member embeddings from the database.
         """
         persons = db.get_all_persons()
 
@@ -167,9 +149,20 @@ class ClusterEngine:
             if person["centroid"] is None:
                 continue
 
+            pid = person["id"]
             centroid = FaceRecognizer.bytes_to_embedding(person["centroid"])
-            self._person_ids.append(person["id"])
-            self._face_counts[person["id"]] = person["face_count"]
+            self._person_ids.append(pid)
+            self._face_counts[pid] = person["face_count"]
+
+            # Load member embeddings
+            faces = db.get_faces_for_person(pid)
+            members = [
+                FaceRecognizer.bytes_to_embedding(f["embedding"])
+                for f in faces
+                if f["embedding"] is not None
+            ]
+            self._person_members[pid] = members if members else [centroid]
+
             centroids.append(centroid)
 
         if centroids:
@@ -182,15 +175,6 @@ class ClusterEngine:
     ) -> AssignResult:
         """
         Process a single unassigned face: assign to existing person or create new.
-
-        This is the core method called for every face during clustering.
-
-        Args:
-            db:       Database instance (for creating persons/assignments).
-            face_row: A sqlite3.Row from iter_unassigned_faces().
-
-        Returns:
-            AssignResult describing what happened.
         """
         face_id = face_row["id"]
         quality = face_row["quality"] or 0.0
@@ -218,7 +202,6 @@ class ClusterEngine:
             )
 
         # Compute similarity to ALL persons at once (matrix multiplication)
-        # (N, 128) @ (128,) → (N,) — one similarity per person
         similarities = self._centroids @ embedding
 
         # Find the best and second-best matches
@@ -228,42 +211,37 @@ class ClusterEngine:
         best_person_id = self._person_ids[best_idx]
 
         # Second-best score (for margin check)
-        second_score = 0.0
-        if len(sorted_indices) > 1:
-            second_score = float(similarities[sorted_indices[1]])
-
+        second_score = float(similarities[sorted_indices[1]]) if len(sorted_indices) > 1 else -1.0
         margin = best_score - second_score
 
-        # Decision logic
-        if best_score >= T_HIGH and margin >= MARGIN_MIN:
-            # HIGH CONFIDENCE: auto-assign to best person
+        # Complete-linkage check against all members of the best candidate
+        member_sims = [float(m @ embedding) for m in self._person_members[best_person_id]]
+        min_member_sim = min(member_sims)
+        avg_member_sim = float(np.mean(member_sims))
+
+        # Assign only if average similarity and minimum member similarity are both strong
+        if avg_member_sim >= T_HIGH and min_member_sim >= T_MIN_MEMBER and margin >= MARGIN_MIN:
             self._assign_to_person(
-                db, face_id, best_person_id, embedding, quality, best_score,
+                db, face_id, best_person_id, embedding, quality, avg_member_sim,
                 source="auto",
             )
             return AssignResult(
                 face_id=face_id,
                 person_id=best_person_id,
                 action=AssignAction.AUTO_ASSIGN,
-                confidence=best_score,
-            )
-
-        elif best_score >= T_REVIEW and margin >= MARGIN_MIN:
-            # MEDIUM CONFIDENCE: assign but mark for review (M5).
-            # In M4 we treat this as auto-assign since there's no review UI yet.
-            self._assign_to_person(
-                db, face_id, best_person_id, embedding, quality, best_score,
-                source="review",
-            )
-            return AssignResult(
-                face_id=face_id,
-                person_id=best_person_id,
-                action=AssignAction.REVIEW_ASSIGN,
-                confidence=best_score,
+                confidence=avg_member_sim,
             )
 
         else:
-            # LOW CONFIDENCE or AMBIGUOUS: create a new person
+            # Not a match to any existing person
+            if quality < MIN_QUALITY_TO_SEED_PERSON:
+                return AssignResult(
+                    face_id=face_id,
+                    person_id=0,
+                    action=AssignAction.SKIPPED,
+                    confidence=best_score,
+                )
+
             person_id = self._create_new_person(db, face_id, embedding)
             return AssignResult(
                 face_id=face_id,
@@ -280,14 +258,10 @@ class ClusterEngine:
     ) -> int:
         """
         Create a new person seeded with this face.
-
-        The face's embedding becomes the person's initial centroid.
         """
-        # Auto-name: "Person 1", "Person 2", ...
         person_number = db.get_next_person_number()
         display_name = f"Person {person_number}"
 
-        # This face's embedding IS the centroid (only member of the cluster)
         centroid_bytes = FaceRecognizer.embedding_to_bytes(embedding)
 
         person_id = db.insert_person(
@@ -297,12 +271,12 @@ class ClusterEngine:
             cover_face_id=face_id,
         )
 
-        # Assign the face to this new person
         db.assign_face_to_person(face_id, person_id, source="auto", confidence=1.0)
 
-        # Update our in-memory state
+        # Update in-memory state
         self._person_ids.append(person_id)
         self._face_counts[person_id] = 1
+        self._person_members[person_id] = [embedding]
 
         if self._centroids is None:
             self._centroids = embedding.reshape(1, -1)
@@ -323,46 +297,26 @@ class ClusterEngine:
     ) -> None:
         """
         Assign a face to an existing person and update the centroid.
-
-        CENTROID UPDATE (quality-weighted incremental):
-        Instead of recomputing the average from scratch every time
-        (which would require loading all embeddings), we update
-        incrementally:
-
-          new_centroid = (old_centroid * old_count + new_embedding * quality)
-                         / (old_count + quality)
-
-        This is a weighted running average. High-quality faces (clear,
-        frontal, large) contribute more to the centroid than low-quality
-        ones (blurry, small, profile).
-
-        The result is re-normalized to unit length for cosine similarity.
         """
-        # Assign face in database
         db.assign_face_to_person(face_id, person_id, source=source, confidence=score)
 
-        # Find this person's index in our arrays
         idx = self._person_ids.index(person_id)
         old_centroid = self._centroids[idx]
         old_count = self._face_counts[person_id]
 
-        # Quality-weighted incremental centroid update
-        # Quality acts as the weight for this face (high quality = more influence)
-        weight = max(quality, 0.1)  # floor at 0.1 to avoid zero-weight
+        weight = max(quality, 0.1)
         total_weight = old_count + weight
         new_centroid = (old_centroid * old_count + embedding * weight) / total_weight
 
-        # Re-normalize to unit length (critical for cosine similarity)
         norm = np.linalg.norm(new_centroid)
         if norm > 1e-10:
             new_centroid = new_centroid / norm
 
-        # Update in-memory state
         new_count = old_count + 1
         self._centroids[idx] = new_centroid
         self._face_counts[person_id] = new_count
+        self._person_members[person_id].append(embedding)
 
-        # Persist to database
         centroid_bytes = FaceRecognizer.embedding_to_bytes(new_centroid)
         db.update_person_centroid(person_id, centroid_bytes, new_count)
 

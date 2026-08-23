@@ -29,7 +29,7 @@ from typing import Optional, Tuple
 
 import cv2
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageOps
 
 # Register HEIF opener so PIL Image.open() automatically supports .heic / .heif
 try:
@@ -110,11 +110,16 @@ def _read_image_safe(file_path: str) -> Optional[np.ndarray]:
     Read an image file in a way that handles Unicode Windows paths,
     standard formats, HEIC/HEIF, and Camera RAW formats.
 
+    CRITICAL: All images are loaded through PIL with ImageOps.exif_transpose()
+    to physically rotate pixels based on the camera's EXIF orientation tag.
+    Without this, iPhone portrait photos appear sideways in memory and
+    face detection fails completely (YuNet expects upright faces).
+
     Decoding pipeline:
       1. np.fromfile() reads raw bytes from disk (handles Unicode paths)
-      2. Fast path: cv2.imdecode() for JPEG, PNG, WebP, BMP, TIFF
-      3. RAW path: rawpy embedded preview extraction for .CR2, .NEF, .ARW, .DNG, etc.
-      4. Fallback: PIL Image.open() (with pillow-heif) for .heic, .heif, etc.
+      2. RAW path: rawpy embedded preview extraction for .CR2, .NEF, .ARW, .DNG, etc.
+      3. PIL path: Image.open() + exif_transpose() for JPEG, PNG, HEIC, etc.
+      4. Fallback: cv2.imdecode() for edge cases PIL can't handle
 
     Args:
         file_path: Full path to the image file.
@@ -133,21 +138,19 @@ def _read_image_safe(file_path: str) -> Optional[np.ndarray]:
         _, ext = os.path.splitext(file_path)
         ext_lower = ext.lower()
 
-        # Step 2: Fast path for standard formats (OpenCV)
-        if ext_lower not in _RAW_EXTENSIONS and ext_lower not in {".heic", ".heif"}:
-            img = cv2.imdecode(raw_bytes, cv2.IMREAD_COLOR)
-            if img is not None:
-                return img
-
-        # Step 3: Camera RAW files (.CR2, .NEF, .ARW, .DNG, etc.)
+        # Step 2: Camera RAW files (.CR2, .NEF, .ARW, .DNG, etc.)
+        # These have their own decoding path and don't use EXIF orientation
         if ext_lower in _RAW_EXTENSIONS:
             raw_img = _decode_raw_image(raw_bytes.tobytes())
             if raw_img is not None:
                 return raw_img
 
-        # Step 4: HEIC/HEIF and other formats via PIL (handles pillow-heif)
+        # Step 3: PIL path with EXIF auto-rotation (handles JPEG, PNG, HEIC, etc.)
+        # This is the PRIMARY path — exif_transpose() physically rotates the
+        # pixel data so iPhone portraits are upright for face detection.
         try:
             with Image.open(io.BytesIO(raw_bytes.tobytes())) as pil_img:
+                pil_img = ImageOps.exif_transpose(pil_img)
                 if pil_img.mode != "RGB":
                     pil_img = pil_img.convert("RGB")
                 rgb_array = np.array(pil_img)
@@ -155,7 +158,8 @@ def _read_image_safe(file_path: str) -> Optional[np.ndarray]:
         except Exception:
             pass
 
-        # Final attempt: try cv2.imdecode in case file had unusual extension
+        # Step 4: Fallback — cv2.imdecode for edge cases PIL can't handle
+        # NOTE: This path does NOT apply EXIF rotation, but it's a rare fallback
         return cv2.imdecode(raw_bytes, cv2.IMREAD_COLOR)
 
     except (OSError, ValueError):

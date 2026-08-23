@@ -55,47 +55,43 @@ Visual of a detected face:
 
 ---
 
-### 2. Confidence Threshold — Filtering False Positives
+### 2. Real-World Challenges & Production Pipeline
 
-YuNet gives every detection a **confidence score** (0.0 to 1.0):
-- **0.95+**: "I'm very sure this is a face" (frontal, well-lit)
-- **0.7-0.95**: "Probably a face" (angled, partially occluded)
-- **0.3-0.7**: "Maybe a face?" (blurry, tiny, or not a face at all)
-- **Below 0.3**: "Random noise"
+When deploying face detection to real photo libraries (iPhone photos, RAW files, close-up selfies), 4 major challenges emerge:
 
-We set a threshold of **0.7** — anything below is discarded.
+#### A. EXIF Orientation (The Invisible 90° Rotation)
+* **The issue**: Smartphones store photos sideways on disk with an EXIF orientation metadata tag.
+* OpenCV's `cv2.imdecode()` ignores this tag, so sideways photos are fed to YuNet sideways. Since deep neural networks expect upright faces, face detection fails completely on portrait photos.
+* **The fix**: `_read_image_safe()` passes images through `PIL.ImageOps.exif_transpose()` to physically rotate pixels upright before passing to YuNet.
 
-```python
-# In FaceDetector.__init__:
-confidence_threshold: float = 0.7   # Minimum to keep
-```
+#### B. Resolution Normalization & Memory Cap
+* **The issue**: Directly feeding 24–48MP images (4000×6000) causes RAM usage to spike past 3.6 GB. Furthermore, small textured objects (ear folds, jewelry, cloth wrinkles) span 100+ pixels at that resolution, mimicking eye-nose-mouth patterns and triggering false positive face detections.
+* **The fix**: Downscale images to `max_dimension = 1280px` prior to YuNet detection. RAM is capped under 400 MB, inference is 4× faster, and micro-textures are shrunk below `min_face_size`.
 
-**The tradeoff**:
-```
-Higher threshold (0.9) → fewer detections, almost zero false positives
-                        but misses angled/blurry faces
+#### C. Close-Up Face Detection via Border Padding
+* **The issue**: When a face fills the entire image (tight selfies), YuNet's anchor-free detection mechanism fails because the face boundaries touch the image edge with zero margin.
+* **The fix**: Apply 15% black padding around the detection image (`cv2.copyMakeBorder`), run YuNet, and invert the coordinates back to original image space.
 
-Lower threshold (0.3)  → catches more faces, but also detects cups,
-                        logos, tree knots as "faces"
-
-Our choice (0.7)       → good balance. Review queue (M5) handles edge cases.
-```
+#### D. Landmark Geometry Validation (Rejecting False Positives)
+* **The issue**: Random textures occasionally pass the confidence threshold.
+* **The fix**: Post-processing geometric filter `_is_valid_face_geometry()` checks:
+  1. Aspect ratio ($0.65 \le h/w \le 1.65$)
+  2. Eye spacing ($\ge 15\%$ of face width)
+  3. Eye-to-mouth vertical distance ($\ge 15\%$ of face height)
+  4. 2D Landmark Triangle Area (Shoelace formula $\ge 1\%$ of bbox area — rejects collinear blobs)
 
 ---
 
-### 3. Minimum Face Size — Another Filter
+### 3. Confidence Threshold — Filtering False Positives
 
-Even with 0.7 confidence, the model sometimes detects tiny objects (cup handles, decorative patterns) as "faces" — especially in game screenshots.
-
-**Fix**: Any detection smaller than 60×60 pixels is discarded.
+YuNet gives every detection a **confidence score** (0.0 to 1.0):
+- **0.95+**: "I'm very sure this is a face" (frontal, well-lit)
+- **0.75-0.95**: "Probably a face" (angled, partially occluded)
+- **Below 0.75**: Discarded as borderline noise
 
 ```python
-# Real faces in photos are typically 60px+ wide
-min_face_size: int = 60
-
-# In the detect loop:
-if face_w < self._min_face_size or face_h < self._min_face_size:
-    continue  # Too small to be a real face
+# In FaceDetector.__init__:
+confidence_threshold: float = 0.75   # Calibrated threshold
 ```
 
 **Why 60px?** A face needs at least ~60 pixels across to have enough detail for two eyes, a nose, and a mouth to be distinguishable. Below that, even humans struggle to tell if something is a face.
