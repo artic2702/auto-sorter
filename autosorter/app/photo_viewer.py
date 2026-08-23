@@ -1,40 +1,35 @@
 """
-Photo viewer — displays a full-size image with CLICKABLE face bounding boxes.
+Photo viewer — displays a full-size image with interactive face bounding boxes.
 
-=== WHAT CHANGED FROM M2? ===
-M2: Face boxes were just visual overlays (painted onto the image).
-M3: Face boxes are now CLICKABLE. Clicking a face opens the "Find Similar"
-    panel showing the most similar faces ranked by cosine similarity.
-
-=== HOW CLICKABLE REGIONS WORK ===
-QPainter draws on a pixmap (flat image) — there's no concept of "clicking
-a drawn rectangle." So we need a different approach:
-
-APPROACH: Track face rectangles in display coordinates.
-When the user clicks the image, we check if the click point falls inside
-any of the face rectangles. If yes, we open the SimilarPanel for that face.
-
-This is called HIT TESTING:
-  click at (245, 180)
-  face box 1: (100, 50, 200, 250) → 100 ≤ 245 ≤ 300, 50 ≤ 180 ≤ 300 → HIT!
-  face box 2: (400, 100, 150, 200) → 400 ≤ 245? NO → miss
+=== WHAT CHANGED IN M5? ===
+M5: Clicking a face bounding box opens an action menu:
+  - View assigned person name
+  - "Assign / Move to Person..."
+  - "Not this person" (unassign)
+  - "Set as Cover Face"
+  - "Find Similar Faces"
 """
 
 import json
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from PySide6.QtCore import QRect, Qt
-from PySide6.QtGui import QColor, QImage, QMouseEvent, QPainter, QPen, QPixmap
+from PySide6.QtCore import QPoint, QRect, Qt, Signal
+from PySide6.QtGui import QColor, QCursor, QImage, QMouseEvent, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
+    QDialog,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
+    QMenu,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QVBoxLayout,
     QWidget,
 )
 
+from autosorter.core.db import Database
 from autosorter.core.thumbnailer import _read_image_safe
 
 
@@ -54,65 +49,44 @@ _FACE_COLORS = [
 class ClickableImageLabel(QLabel):
     """
     A QLabel that detects clicks on face bounding boxes.
-
-    WHY A SUBCLASS?
-    QLabel doesn't know about face boxes — it just displays a pixmap.
-    We subclass it to add:
-    1. A list of face rectangles (in display coordinates)
-    2. A mousePressEvent that checks if the click hit any face box
-    3. A callback to open the SimilarPanel for the clicked face
     """
 
     def __init__(self, parent_viewer: "PhotoViewer", parent=None):
         super().__init__(parent)
         self._parent_viewer = parent_viewer
-        # List of (QRect, face_row) pairs — populated when we draw boxes
         self._face_rects: List[Tuple[QRect, dict]] = []
-        self.setCursor(Qt.CursorShape.CrossCursor)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
 
     def set_face_rects(self, rects: List[Tuple[QRect, dict]]) -> None:
         """Store the face rectangles for hit testing."""
         self._face_rects = rects
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
-        """
-        Check if the click landed on a face box.
-
-        HIT TESTING: For each face rectangle, check if the click point
-        (event.pos()) is inside the rectangle. The FIRST hit wins
-        (faces are drawn in order, so the topmost visually wins).
-        """
-        if event.button() != Qt.MouseButton.LeftButton:
-            return
-
+        """Check if the click landed on a face box."""
         click_pos = event.pos()
 
-        # Account for label alignment offset
-        # The pixmap might be centered in the label if the label is larger
         pixmap = self.pixmap()
         if pixmap is None or pixmap.isNull():
             return
 
-        # Calculate offset (pixmap is centered in label)
         offset_x = (self.width() - pixmap.width()) // 2
         offset_y = (self.height() - pixmap.height()) // 2
 
-        # Adjust click position relative to pixmap
         adjusted_x = click_pos.x() - offset_x
         adjusted_y = click_pos.y() - offset_y
 
         for rect, face_row in self._face_rects:
             if rect.contains(adjusted_x, adjusted_y):
-                self._parent_viewer._on_face_clicked(face_row)
+                self._parent_viewer._on_face_clicked(face_row, event.globalPosition().toPoint())
                 return
 
 
 class PhotoViewer(QWidget):
     """
-    A window that displays a photo with clickable face detection overlays.
-
-    M3 addition: clicking a face box opens the "Find Similar" panel.
+    A window that displays a photo with interactive face detection overlays.
     """
+
+    changed = Signal()  # Emitted when face assignments are changed
 
     def __init__(
         self,
@@ -121,40 +95,32 @@ class PhotoViewer(QWidget):
         data_folder: Optional[Path] = None,
         parent: Optional[QWidget] = None,
     ) -> None:
-        """
-        Args:
-            image_path:  Full path to the original image file.
-            faces:       List of face rows from the database.
-            data_folder: Path to .autosorter directory (for SimilarPanel).
-            parent:      Parent widget (optional).
-        """
         super().__init__(parent)
 
         self._image_path = image_path
         self._faces = [f for f in faces if f["det_score"] >= 0]
         self._data_folder = data_folder
-        self._similar_panels: list = []  # Keep refs to open panels
+        self._similar_panels: list = []
 
         self.setWindowTitle(f"Photo Viewer — {Path(image_path).name}")
-        self.resize(900, 700)
+        self.resize(920, 720)
         self.setMinimumSize(400, 300)
 
         self._build_ui()
 
     def _build_ui(self) -> None:
-        """Build the viewer layout."""
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        # --- Info bar at the top ---
+        # Info bar
         info_bar = QHBoxLayout()
         info_bar.setContentsMargins(12, 8, 12, 8)
 
         face_count = len(self._faces)
         face_text = f"{face_count} face{'s' if face_count != 1 else ''} detected"
-        click_hint = " — click a face box to find similar" if face_count > 0 else ""
+        click_hint = " — click any face box to view or reassign person" if face_count > 0 else ""
         self._info_label = QLabel(
-            f"📷 {Path(self._image_path).name}  —  {face_text}{click_hint}"
+            f"📷 <b>{Path(self._image_path).name}</b>  —  {face_text}{click_hint}"
         )
         self._info_label.setStyleSheet("font-size: 13px;")
         info_bar.addWidget(self._info_label)
@@ -167,12 +133,11 @@ class PhotoViewer(QWidget):
 
         layout.addLayout(info_bar)
 
-        # --- Scrollable image area ---
+        # Scrollable image area
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        # Use our clickable label instead of plain QLabel
         self._image_label = ClickableImageLabel(self)
         self._image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._image_label.setStyleSheet("background-color: #1a1a1a;")
@@ -183,7 +148,6 @@ class PhotoViewer(QWidget):
         self._load_and_draw()
 
     def _load_and_draw(self) -> None:
-        """Load the image, draw face overlays, and display it."""
         img = _read_image_safe(self._image_path)
         if img is None:
             self._image_label.setText("❌ Could not load image")
@@ -191,10 +155,7 @@ class PhotoViewer(QWidget):
 
         h, w = img.shape[:2]
         bytes_per_line = 3 * w
-        # QImage needs the buffer to remain valid; copy() ensures memory safety
-        qimg = QImage(
-            img.data, w, h, bytes_per_line, QImage.Format.Format_BGR888
-        ).copy()
+        qimg = QImage(img.data, w, h, bytes_per_line, QImage.Format.Format_BGR888).copy()
         pixmap = QPixmap.fromImage(qimg)
 
         if pixmap.isNull():
@@ -212,16 +173,28 @@ class PhotoViewer(QWidget):
         scale_x = display_pixmap.width() / pixmap.width()
         scale_y = display_pixmap.height() / pixmap.height()
 
-        # Track face rectangles for click detection
         face_rects: List[Tuple[QRect, dict]] = []
+
+        # Refresh faces from DB to get latest person assignments
+        if self._data_folder:
+            db_path = self._data_folder / "library.db"
+            if db_path.exists():
+                db = Database(db_path)
+                fresh_faces = []
+                for f in self._faces:
+                    refreshed = db.get_face_by_id(f["id"])
+                    fresh_faces.append(refreshed if refreshed else f)
+                self._faces = fresh_faces
+                db.close()
 
         if self._faces:
             painter = QPainter(display_pixmap)
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
+            db = Database(self._data_folder / "library.db") if self._data_folder else None
+
             for i, face in enumerate(self._faces):
                 color = _FACE_COLORS[i % len(_FACE_COLORS)]
-
                 pen = QPen(color)
                 pen.setWidth(3)
                 painter.setPen(pen)
@@ -232,19 +205,19 @@ class PhotoViewer(QWidget):
                 h = int(face["bbox_h"] * scale_y)
 
                 painter.drawRect(x, y, w, h)
-
-                # Store the rectangle for hit testing
                 face_rects.append((QRect(x, y, w, h), face))
 
-                # Confidence label
-                conf = face["det_score"]
-                label_text = f"{conf:.0%}"
-                painter.setPen(QPen(color))
-                text_y = y - 5 if y > 20 else y + 18
-                painter.drawText(x + 2, text_y, label_text)
+                # Person name or confidence tag
+                person_name = None
+                if db and face["person_id"]:
+                    p = db.get_person_by_id(face["person_id"])
+                    if p:
+                        person_name = p["display_name"]
 
-                # "Click me" hint
-                painter.drawText(x + 2, y + h + 15, "🔍 click")
+                tag_text = person_name if person_name else f"{face['det_score']:.0%}"
+                painter.setPen(QPen(color))
+                text_y = y - 6 if y > 22 else y + 16
+                painter.drawText(x + 2, text_y, tag_text)
 
                 # Landmarks
                 if face["landmarks"]:
@@ -258,33 +231,83 @@ class PhotoViewer(QWidget):
                     except (json.JSONDecodeError, TypeError):
                         pass
 
+            if db:
+                db.close()
+
             painter.end()
 
-        # Pass the rectangles to the clickable label for hit testing
         self._image_label.set_face_rects(face_rects)
         self._image_label.setPixmap(display_pixmap)
 
-    def _on_face_clicked(self, face_row) -> None:
+    def _on_face_clicked(self, face_row: dict, global_pos: QPoint) -> None:
         """Called when a face bounding box is clicked."""
-        if self._data_folder is None:
+        if not self._data_folder:
             return
 
         face_id = face_row["id"]
-
-        # Check if this face has an embedding
-        if face_row["embedding"] is None:
-            self._info_label.setText(
-                "⚠️ This face has no embedding yet. Run 'Detect Faces' first."
-            )
+        db = Database(self._data_folder / "library.db")
+        fresh_face = db.get_face_by_id(face_id)
+        if not fresh_face:
+            db.close()
             return
 
-        # Import here to avoid circular imports
-        from autosorter.app.similar_panel import SimilarPanel
+        person_name = "Unassigned"
+        if fresh_face["person_id"]:
+            person = db.get_person_by_id(fresh_face["person_id"])
+            if person:
+                person_name = person["display_name"]
+        db.close()
 
-        panel = SimilarPanel(self._data_folder, face_id)
-        panel.show()
-        self._similar_panels.append(panel)
-
-        self._info_label.setText(
-            f"🔍 Showing similar faces for face #{face_id}"
+        # Build context popup menu
+        menu = QMenu(self)
+        menu.setStyleSheet(
+            "QMenu { background-color: #2b2b2b; color: #e0e0e0; border: 1px solid #444; }"
+            "QMenu::item { padding: 6px 20px; }"
+            "QMenu::item:selected { background-color: #4CAF50; color: white; }"
         )
+
+        title_act = menu.addAction(f"👤 Person: {person_name}")
+        title_act.setEnabled(False)
+        menu.addSeparator()
+
+        assign_act = menu.addAction("➡️ Assign / Move to Person...")
+        unassign_act = menu.addAction("❌ Remove from Person (Unassign)") if fresh_face["person_id"] else None
+        cover_act = menu.addAction("⭐ Set as Cover Face") if fresh_face["person_id"] else None
+        menu.addSeparator()
+        similar_act = menu.addAction("🔍 Find Similar Faces")
+
+        action = menu.exec(global_pos)
+
+        if action == assign_act:
+            from autosorter.app.people_panel import MoveFaceDialog
+            dialog = MoveFaceDialog(fresh_face["person_id"], self._data_folder, self)
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                target_id, new_name = dialog.get_result()
+                db = Database(self._data_folder / "library.db")
+                if target_id == -1 and new_name:
+                    db.create_person_for_face(face_id, new_name)
+                elif target_id and target_id > 0:
+                    db.reassign_face(face_id, target_id)
+                db.close()
+                self._load_and_draw()
+                self.changed.emit()
+
+        elif action == unassign_act and unassign_act is not None:
+            db = Database(self._data_folder / "library.db")
+            db.unassign_face(face_id)
+            db.close()
+            self._load_and_draw()
+            self.changed.emit()
+
+        elif action == cover_act and cover_act is not None:
+            db = Database(self._data_folder / "library.db")
+            db.update_person_cover(fresh_face["person_id"], face_id)
+            db.close()
+            self._load_and_draw()
+            self.changed.emit()
+
+        elif action == similar_act:
+            from autosorter.app.similar_panel import SimilarPanel
+            panel = SimilarPanel(self._data_folder, face_id)
+            panel.show()
+            self._similar_panels.append(panel)

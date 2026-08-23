@@ -531,9 +531,15 @@ class MainWindow(QMainWindow):
         viewer = PhotoViewer(
             image_row["path"], faces, data_folder=self._data_folder
         )
+        viewer.changed.connect(self._on_viewer_changed)
         viewer.show()
         # Keep a reference so the window doesn't get garbage-collected
         self._viewers.append(viewer)
+
+    def _on_viewer_changed(self) -> None:
+        """When face assignments change in photo viewer, reload people panel."""
+        if self._people_panel is not None:
+            self._people_panel.load_persons()
 
     # ==================================================================
     # Identity control (M4)

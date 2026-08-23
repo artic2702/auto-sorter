@@ -172,6 +172,11 @@ OCR/search, semantic search, pets/objects, video, blur/best-shot detection, dupl
 
 ## Decisions log
 
-- **2026-07-10** — Plan approved. Stack: Python 3.12 + PySide6 + OpenCV (YuNet + SFace, Apache-2.0) + SQLite. Conservative clustering. Finish line = installer (M9).
-- **2026-07-10** — Repo pushed to https://github.com/artic2702/auto-sorter (user's request).
-- **2026-07-10** — M0 done. License check on downloaded weights: YuNet is actually **MIT** (not Apache-2.0), SFace is Apache-2.0 — both permissive, license files committed next to the models. Models verified loading + running via pytest.
+- 2026-07-10 — Plan approved. Stack: Python 3.12 + PySide6 + OpenCV (YuNet + SFace, Apache-2.0) + SQLite. Conservative clustering. Finish line = installer (M9).
+- 2026-07-10 — Repo pushed to https://github.com/artic2702/auto-sorter (user's request).
+- 2026-07-10 — M0 done. License check on downloaded weights: YuNet is actually **MIT** (not Apache-2.0), SFace is Apache-2.0 — both permissive, license files committed next to the models. Models verified loading + running via pytest.
+- 2026-08-20 — M1 done. High-performance scanner, SQLite WAL DB, thumbnails with EXIF auto-rotation, background thread worker with Qt live signals.
+- 2026-08-21 — M2 done. Face detection pipeline using YuNet, landmark extraction, affine alignment, quality scoring, and live photo viewer overlay.
+- 2026-08-22 — M3 done. Face embeddings using SFace, 128-d L2 normalized faceprints in BLOB storage, Dev Find Similar matrix search panel.
+- 2026-08-23 — M4 done. Incremental centroid clustering with drift protection and member validation, person cards, inline renaming.
+- 2026-08-24 — M5 done. Manual corrections: 1-click merge cards with live search filter, "Not this person", "Move to...", "Create new person card", cover photo selection, and interactive box-click assignment in full photo viewer. All 114 tests passing.

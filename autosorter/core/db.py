@@ -24,7 +24,11 @@ This is critical because our UI thread reads from the DB while the scanner write
 
 import sqlite3
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
+
+import numpy as np
+
+from autosorter.core.face_embed import FaceRecognizer
 
 
 # The SQL statements that create our tables.
@@ -886,6 +890,176 @@ class Database:
             """
         )
         return cursor.fetchone()[0]
+
+    # ------------------------------------------------------------------
+    # M5: Corrections & Manual Organization
+    # ------------------------------------------------------------------
+
+    def recompute_person_centroid(self, person_id: int) -> None:
+        """
+        Recompute a person's weighted centroid, face count, and cover face.
+
+        Called whenever faces are added, removed, or merged into this person.
+        Uses quality-weighted averaging of all assigned faces.
+        If no faces remain, deletes the empty person.
+        """
+        faces = self.get_faces_for_person(person_id)
+        if not faces:
+            # No faces left for this person -> clean up empty record
+            self._conn.execute("DELETE FROM persons WHERE id = ?", (person_id,))
+            self._conn.commit()
+            return
+
+        embs = []
+        weights = []
+        for f in faces:
+            if f["embedding"] is not None:
+                emb = FaceRecognizer.bytes_to_embedding(f["embedding"])
+                weight = max(f["quality"] or 0.5, 0.1)
+                embs.append(emb * weight)
+                weights.append(weight)
+
+        if embs:
+            sum_emb = np.sum(embs, axis=0)
+            total_weight = sum(weights)
+            centroid = sum_emb / total_weight
+            norm = np.linalg.norm(centroid)
+            if norm > 1e-10:
+                centroid = centroid / norm
+            centroid_bytes = FaceRecognizer.embedding_to_bytes(centroid)
+        else:
+            centroid_bytes = None
+
+        # Best face is first in list (ordered by quality DESC)
+        best_face_id = faces[0]["id"]
+        face_count = len(faces)
+
+        self._conn.execute(
+            """
+            UPDATE persons
+            SET centroid = ?, face_count = ?, cover_face_id = ?
+            WHERE id = ?
+            """,
+            (centroid_bytes, face_count, best_face_id, person_id),
+        )
+        self._conn.commit()
+
+    def merge_persons(self, source_person_id: int, target_person_id: int) -> None:
+        """
+        Merge source person into target person (1-click merge).
+
+        - Moves all faces from source to target with assign_source = 'user'
+        - Deletes source person
+        - Recomputes target person's centroid, count, and cover face
+        """
+        if source_person_id == target_person_id:
+            return
+
+        self._conn.execute(
+            """
+            UPDATE faces
+            SET person_id = ?, assign_source = 'user', assign_conf = 1.0
+            WHERE person_id = ?
+            """,
+            (target_person_id, source_person_id),
+        )
+        self._conn.execute("DELETE FROM persons WHERE id = ?", (source_person_id,))
+        self._conn.commit()
+
+        self.recompute_person_centroid(target_person_id)
+
+    def unassign_face(self, face_id: int) -> Optional[int]:
+        """
+        Remove a face from its assigned person ("Not this person").
+
+        Sets person_id = NULL and marks assign_source = 'user'.
+        Recomputes the old person's centroid so the incorrect face
+        stops poisoning the person's average.
+        Returns the old person_id (or None).
+        """
+        face = self.get_face_by_id(face_id)
+        if not face:
+            return None
+
+        old_person_id = face["person_id"]
+        self._conn.execute(
+            """
+            UPDATE faces
+            SET person_id = NULL, assign_source = 'user', assign_conf = NULL
+            WHERE id = ?
+            """,
+            (face_id,),
+        )
+        self._conn.commit()
+
+        if old_person_id is not None:
+            self.recompute_person_centroid(old_person_id)
+
+        return old_person_id
+
+    def reassign_face(self, face_id: int, new_person_id: int) -> None:
+        """
+        Move a face to a different person ("Move to...").
+
+        Updates centroids for both old and new persons.
+        """
+        face = self.get_face_by_id(face_id)
+        if not face:
+            return
+
+        old_person_id = face["person_id"]
+        if old_person_id == new_person_id:
+            return
+
+        self._conn.execute(
+            """
+            UPDATE faces
+            SET person_id = ?, assign_source = 'user', assign_conf = 1.0
+            WHERE id = ?
+            """,
+            (new_person_id, face_id),
+        )
+        self._conn.commit()
+
+        self.recompute_person_centroid(new_person_id)
+        if old_person_id is not None:
+            self.recompute_person_centroid(old_person_id)
+
+    def create_person_for_face(self, face_id: int, display_name: Optional[str] = None) -> int:
+        """
+        Create a new person card seeded by a single face.
+        """
+        face = self.get_face_by_id(face_id)
+        if not face:
+            raise ValueError(f"Face {face_id} not found")
+
+        old_person_id = face["person_id"]
+
+        if not display_name:
+            person_number = self.get_next_person_number()
+            display_name = f"Person {person_number}"
+
+        person_id = self.insert_person(
+            display_name=display_name,
+            centroid_bytes=face["embedding"],
+            face_count=1,
+            cover_face_id=face_id,
+        )
+
+        self._conn.execute(
+            """
+            UPDATE faces
+            SET person_id = ?, assign_source = 'user', assign_conf = 1.0
+            WHERE id = ?
+            """,
+            (person_id, face_id),
+        )
+        self._conn.commit()
+
+        if old_person_id is not None:
+            self.recompute_person_centroid(old_person_id)
+
+        return person_id
 
     # ------------------------------------------------------------------
     # Lifecycle
