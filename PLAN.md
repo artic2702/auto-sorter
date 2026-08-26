@@ -151,7 +151,7 @@ d:\Auto_sorter\
 | M2 | Face detection (worker pool) + face thumbs + boxes in viewer | faces visible & aligned on personal test set |
 | M3 | Faceprints (align + SFace) stored; dev "find similar" panel | same-person similarity clearly > different-person |
 | M4 | **People discovery + rename** ← first full vertical slice | on 1–3k personal photos: top people found, zero wrong merges, rename survives restart |
-| M5 | Corrections: merge, not-this-person, reassign, box-click assign | every correction survives restart + full re-scan |
+| M5 | **Corrections: merge, not-this-person, reassign, box-click assign** | every correction survives restart + full re-scan |
 | M6 | Resume/incremental: kill-and-relaunch resume, new-photos-only, moved-file reattach | kill mid-scan → resumes exactly; new photos of named person auto-file |
 | M7 | Albums (Group/Unknown/Review/Text&Docs) + optional Export | group photo under each person with ONE file on disk; export never touches sources |
 | M8 | Performance: 20k+ test, speed dial tuning, low-spec benchmark, memory cap verified | documented img/s on min-spec machine; RAM < 1.5 GB; multiprocessing fallback if threads underperform |

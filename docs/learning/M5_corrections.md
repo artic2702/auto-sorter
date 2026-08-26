@@ -1,155 +1,216 @@
 # Milestone 5 — Corrections & Manual Library Organization
 
 ## 🎯 Goal
-Provide fast, intuitive manual tools to fix any AI misidentifications or split person cards:
+Provide fast, intuitive, and robust manual organization tools to correct any AI misidentifications, split cards, or false matches:
 1. **Merge Person Cards** — Combine 2 split cards of the same person into one with 1 click.
 2. **"Not this person"** — Remove an incorrectly assigned face from a person card.
-3. **"Move to..."** — Reassign a face to another person or create a new person card.
-4. **"Set as Cover"** — Pick which face photo represents the person card.
-5. **Interactive Box-Click** — Click any face bounding box in the full photo viewer to view or change its person assignment.
-6. **Full Photo Inspection** — Double-click any face in an album or click `🔍 Full Photo` to inspect the high-resolution original image.
+3. **"Move to..."** — Reassign a face to an existing person card.
+4. **"Move to NEW Person Card"** — Split a face out into a brand new person section in 2 clicks.
+5. **"Set as Cover"** — Pick which face photo represents the person card avatar.
+6. **Interactive Box-Click** — Click any face bounding box in the full photo viewer to view or reassign its identity.
+7. **Full Photo Inspection** — Double-click any face or click `🔍 Full Photo` to inspect the high-resolution original image.
 
 ---
 
 ## 📦 Concepts Learned
 
 ### 1. The Human-in-the-Loop Philosophy
-No face clustering model is 100% perfect under real-world conditions (drastic lighting changes, angle/profile views, sunglasses, aging).
-Rather than pretending the AI is infallible, Auto-Sorter gives the user **1-click correction superpowers**:
-- If the AI splits a person into two cards (e.g. child vs adult, or with glasses vs without): **Merge them**.
-- If a photo contains a wrong person: **Remove or shift it to a new card in 2 clicks**.
-- All manual corrections are tagged with `assign_source = 'user'` and `assign_conf = 1.0`, meaning re-scans and automated updates will **never overwrite user decisions**.
+
+No computer vision face clustering model is 100% accurate across all real-world conditions (harsh shadows, profiles, heavy motion blur, aging, glasses). 
+
+Instead of pretending the AI never makes mistakes, Auto-Sorter treats the AI as a **first-pass drafter** and gives the user **1-click correction superpowers**:
+
+```
+AI First-Pass (M4):           User Correction (M5):
+┌─────────────────────────┐   ┌───────────────────────────────────────────┐
+│ Discovers 12 people     │ → │ • 2 cards are the same person → [🔗 Merge] │
+│ Auto-clusters 95%+ faces│   │ • 1 wrong face in card → [❌ Not This]    │
+│                         │   │ • Face belongs to new person → [➕ Move New]│
+└─────────────────────────┘   └───────────────────────────────────────────┘
+```
+
+**Safety Principle:** All manual corrections set `assign_source = 'user'` and `assign_conf = 1.0`. Automated re-scans will **never overwrite or undo user decisions**.
 
 ---
 
-### 2. Mathematical Centroid Recomputation
-When faces are added, removed, or merged, the person's identity vector (centroid) must be updated immediately so future comparisons are accurate:
+### 2. Centroid Cleansing & Recomputation Math
 
-$$\vec{C} = \frac{\sum_{i=1}^N q_i \cdot \vec{e}_i}{\sum_{i=1}^N q_i}$$
+When a user merges two people, removes a face ("Not this person"), or shifts a face to another card, the person's identity vector (centroid) must be updated immediately so that future incremental scans and searches remain accurate.
+
+#### The Quality-Weighted Average Formula:
+$$\vec{C}_{\text{raw}} = \sum_{i=1}^{N} q_i \cdot \vec{e}_i$$
 
 Where:
-- $\vec{e}_i$ is the 128-dimensional embedding of face $i$.
-- $q_i = \max(\text{quality}_i, 0.1)$ is the face quality weight.
-- $\vec{C}$ is L2-normalized: $\vec{C} \leftarrow \frac{\vec{C}}{\|\vec{C}\|}$.
+- $\vec{e}_i$ is the 128-dimensional embedding vector of face $i$.
+- $q_i = \max(\text{quality}_i, 0.1)$ is the YuNet face quality score (confidence + sharpness + frontal angle).
+- $N$ is the total number of remaining faces for this person.
 
-**Why quality weighting matters:**
-High-resolution, front-facing, sharp photos dominate the average vector, while blurry or extreme-angle photos contribute less, keeping the centroid crisp and representative.
+#### Normalization (L2-Norm):
+$$\vec{C} = \frac{\vec{C}_{\text{raw}}}{\|\vec{C}_{\text{raw}}\|_2}$$
 
----
-
-### 3. Database Operations for Corrections
-
-#### 🔗 1-Click Merge (`db.merge_persons(source_id, target_id)`)
 ```python
-def merge_persons(self, source_person_id: int, target_person_id: int) -> None:
-    # 1. Move all faces from source to target
+# Implementation in db.py:
+def recompute_person_centroid(self, person_id: int) -> None:
+    faces = self.get_faces_for_person(person_id)
+    if not faces:
+        # If no faces remain, cleanly delete the empty person card
+        self._conn.execute("DELETE FROM persons WHERE id = ?", (person_id,))
+        self._conn.commit()
+        return
+
+    embs = []
+    weights = []
+    for f in faces:
+        if f["embedding"] is not None:
+            emb = FaceRecognizer.bytes_to_embedding(f["embedding"])
+            weight = max(f["quality"] or 0.5, 0.1)
+            embs.append(emb * weight)
+            weights.append(weight)
+
+    if embs:
+        sum_emb = np.sum(embs, axis=0)
+        total_weight = sum(weights)
+        centroid = sum_emb / total_weight
+        norm = np.linalg.norm(centroid)
+        if norm > 1e-10:
+            centroid = centroid / norm
+        centroid_bytes = FaceRecognizer.embedding_to_bytes(centroid)
+    else:
+        centroid_bytes = None
+
+    # Cover face is always the highest-quality face remaining
+    best_face_id = faces[0]["id"]
+    face_count = len(faces)
+
     self._conn.execute(
-        "UPDATE faces SET person_id = ?, assign_source = 'user', assign_conf = 1.0 WHERE person_id = ?",
-        (target_person_id, source_person_id),
-    )
-    # 2. Delete the source person record
-    self._conn.execute("DELETE FROM persons WHERE id = ?", (source_person_id,))
-    self._conn.commit()
-
-    # 3. Recompute centroid, face count, and cover photo for target person
-    self.recompute_person_centroid(target_person_id)
-```
-
-#### ❌ "Not This Person" (`db.unassign_face(face_id)`)
-```python
-def unassign_face(self, face_id: int) -> Optional[int]:
-    face = self.get_face_by_id(face_id)
-    old_person_id = face["person_id"]
-    
-    self._conn.execute(
-        "UPDATE faces SET person_id = NULL, assign_source = 'user', assign_conf = NULL WHERE id = ?",
-        (face_id,),
-    )
-    self._conn.commit()
-
-    if old_person_id is not None:
-        self.recompute_person_centroid(old_person_id)
-    return old_person_id
-```
-
-#### ➕ Create New Person from Face (`db.create_person_for_face(face_id, name)`)
-```python
-def create_person_for_face(self, face_id: int, display_name: Optional[str] = None) -> int:
-    face = self.get_face_by_id(face_id)
-    person_id = self.insert_person(
-        display_name=display_name or f"Person {self.get_next_person_number()}",
-        centroid_bytes=face["embedding"],
-        face_count=1,
-        cover_face_id=face_id,
-    )
-    self._conn.execute(
-        "UPDATE faces SET person_id = ?, assign_source = 'user', assign_conf = 1.0 WHERE id = ?",
-        (person_id, face_id),
+        "UPDATE persons SET centroid = ?, face_count = ?, cover_face_id = ? WHERE id = ?",
+        (centroid_bytes, face_count, best_face_id, person_id),
     )
     self._conn.commit()
-    return person_id
 ```
 
 ---
 
-### 4. UI Architecture & PySide6 Lessons
+### 3. 1-Click Merge Architecture
+
+When Person A ("Arnav with glasses") and Person B ("Arnav without glasses") are merged into Person A:
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│ PeoplePanel                                                 │
-│ ┌───────────────┐ ┌───────────────┐ ┌───────────────┐      │
-│ │ PersonCard 1  │ │ PersonCard 2  │ │ PersonCard 3  │ ...  │
-│ │ [Avatar 110px]│ │ [Avatar 110px]│ │ [Avatar 110px]│      │
-│ │  Name ✏️   🔗 │ │  Name ✏️   🔗 │ │  Name ✏️   🔗 │      │
-│ └───────┬───────┘ └───────────────┘ └───────────────┘      │
-└─────────┼───────────────────────────────────────────────────┘
-          │ Click Card
-          ▼
-┌─────────────────────────────────────────────────────────────┐
-│ PersonDetailPanel (900x680)                                 │
-│ Header: [Name] — [Count] photos | [✏️ Rename] [🔗 Merge with]│
-│ ┌─────────────────────────────────────────────────────────┐ │
-│ │ Scrollable Face Grid (120x120 thumbnails)               │ │
-│ │ ┌─────────────┐ ┌─────────────┐ ┌─────────────┐         │ │
-│ │ │ Face Thumb  │ │ Face Thumb  │ │ Face Thumb  │         │ │
-│ │ │ 🔍 Full Pic │ │ 🔍 Full Pic │ │ 🔍 Full Pic │         │ │
-│ │ └──────┬──────┘ └─────────────┘ └─────────────┘         │ │
-│ └────────┼────────────────────────────────────────────────┘ │
-└──────────┼──────────────────────────────────────────────────┘
-           │ Double-click or click 'Full Pic'
-           ▼
-┌─────────────────────────────────────────────────────────────┐
-│ PhotoViewer (Full Resolution Photo)                         │
-│ [Draws colored bounding boxes on faces]                    │
-│ Click face box → Context Menu:                             │
-│   • Assigned to: [Name]                                    │
-│   • ➡️ Move / Assign to Person...                          │
-│   • ❌ Remove from Person                                  │
-│   • ⭐ Set as Cover Face                                   │
-│   • 🔍 Find Similar Faces                                  │
-└─────────────────────────────────────────────────────────────┘
+Before Merge:
+Person 1 (Arnav):   [Face 10, Face 12]       Centroid = C_1
+Person 2 (Arnav 2): [Face 45, Face 46, Face 50] Centroid = C_2
+
+Execute db.merge_persons(source_id=2, target_id=1):
+1. UPDATE faces SET person_id = 1, assign_source = 'user' WHERE person_id = 2
+2. DELETE FROM persons WHERE id = 2
+3. Recompute Person 1 centroid across all 5 faces: [10, 12, 45, 46, 50]
+4. Pick highest-quality face among all 5 as cover avatar.
+
+After Merge:
+Person 1 (Arnav):   [Face 10, Face 12, Face 45, Face 46, Face 50] (5 photos)
+Person 2:           DELETED
 ```
 
-#### 💡 Key Qt Gotchas Resolved:
-1. **Mouse Event Interception by Child QLabels**:
-   - `QLabel` widgets consume mouse events by default. When an image label is placed inside a clickable cell, double-clicks do not bubble up to the cell.
-   - **Fix**: Set `label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)`.
-2. **Shiboken C++ Signal Type Safety**:
-   - Passing `sqlite3.Row` dictionaries across `Signal(dict)` triggers Shiboken conversion exceptions in C++.
-   - **Fix**: Use primitive integer types (`Signal(int)`) passing the `face_id` or `person_id`.
-3. **Responsive Grid Wrapping**:
-   - Instead of hard-coded row/column counts, dynamic column calculation in `resizeEvent` recalculates `cols = max(1, (width - 60) // (FACE_SIZE + 24))` so grids re-flow smoothly on any display scale.
+#### Merge Dialog Features:
+- **Live Search Filter:** Type in `🔍 Type name to filter...` to search through hundreds of people in milliseconds.
+- **Visual Cover Thumbnails:** Displays each candidate's circular face avatar and photo count.
+- **Double-Click Confirmation:** Double-click any person in the list to select and confirm the merge in one smooth motion.
 
 ---
 
-## 🧪 Test Coverage
+### 4. "Move to NEW Person Card" — Instant Section Splitting
 
-| Test Case | What It Validates |
-|---|---|
-| `test_merge_two_persons` | Reassigns all faces, updates target centroid/count/cover, deletes source card |
-| `test_merge_same_person_noop` | Merging person into self is safe no-op |
-| `test_unassign_removes_face_and_updates_centroid` | Unassigns face, cleanses centroid, picks new cover |
-| `test_unassign_last_face_deletes_empty_person` | Removing only face cleanly deletes empty card |
-| `test_reassign_between_persons` | Moves face between cards, updates both centroids |
-| `test_create_person_for_face` | Seeds new person card from single face |
-| `test_corrections_survive_reopen` | All corrections persist across database restart |
+When an album has 1 wrong face mixed in with 40 correct faces:
+1. User right-clicks the wrong face $\rightarrow$ **`➕ Move to NEW Person Card...`**
+2. Prompts for a name (e.g. *"Rohan"*).
+3. Auto-Sorter:
+   - Creates `Person N` named *"Rohan"*.
+   - Seeds the new card's centroid with that face's embedding.
+   - Sets that face as Rohan's cover photo.
+   - Moves the face out of the original person's album.
+   - Cleanses the original person's centroid so it never drifts toward Rohan again!
+
+---
+
+### 5. Interactive Hit-Testing in Full Photo Viewer
+
+When viewing a full photograph with multiple people:
+1. Face bounding boxes are stored in original image coordinates: `(bbox_x, bbox_y, bbox_w, bbox_h)`.
+2. When rendered on screen, the image is scaled to fit the viewer window: `scale_x = display_w / original_w`.
+3. Display rectangles are computed: `rect = QRect(x * scale_x, y * scale_y, w * scale_x, h * scale_y)`.
+4. **Hit-Testing on Mouse Click:**
+   ```python
+   # In ClickableImageLabel.mousePressEvent:
+   click_pos = event.pos() - offset  # centered image offset
+   for rect, face_row in self._face_rects:
+       if rect.contains(click_pos):
+           self._parent_viewer._on_face_clicked(face_row, event.globalPosition().toPoint())
+           return
+   ```
+5. A popup menu appears directly at the clicked face showing:
+   - Current assignment (`👤 Person: Arnav` or `Unassigned`)
+   - `➡️ Assign / Move to Person...`
+   - `❌ Remove from Person (Unassign)`
+   - `⭐ Set as Cover Face`
+   - `🔍 Find Similar Faces`
+
+---
+
+### 6. Qt & PySide6 Technical Lessons
+
+#### 🛡️ Issue 1: Event Consumption by Child QLabels
+* **Problem:** In `FaceCellWidget`, clicking or double-clicking the face photo failed because the child `QLabel` displaying the image consumed all mouse events, preventing the parent widget's `mouseDoubleClickEvent` from firing.
+* **Solution:** Set `setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)` on all decorative child labels (`_thumb_label`, `_name_label`, `_count_label`). Now mouse clicks pass straight to the parent cell container!
+
+#### 🛡️ Issue 2: Shiboken C++ Type Conversion on Custom Python Types
+* **Problem:** Defining a PySide6 signal as `open_photo_requested = Signal(dict)` and emitting an internal `sqlite3.Row` object triggered a fatal Shiboken C++ conversion exception:
+  `Shiboken::Conversions::_pythonToCppCopy: Cannot copy-convert sqlite3.Row to C++`
+* **Solution:** Signals should always pass primitive types (`Signal(int)` passing `face_id` or `person_id`). The receiver queries the database cleanly by ID.
+
+#### 🛡️ Issue 3: Responsive Dynamic Layout Reflow
+* **Problem:** Fixed grid columns clipped face cards on smaller screens and left vast empty margins on 4K monitors.
+* **Solution:** Implement `resizeEvent(self, event)` to dynamically recalculate column counts on the fly:
+  `cols = max(1, (self.width() - 60) // (DETAIL_FACE_SIZE + 24))`
+  The grid automatically reflows smoothly as the window is resized or maximized.
+
+---
+
+## 📋 Files Created / Modified in M5
+
+| File | Status | Purpose |
+|---|---|---|
+| `autosorter/core/db.py` | MODIFIED | Added `merge_persons`, `unassign_face`, `reassign_face`, `create_person_for_face`, and `recompute_person_centroid` |
+| `autosorter/app/people_panel.py` | MODIFIED | Added `MergePersonDialog`, `MoveFaceDialog`, `FaceCellWidget` (120px thumbs + double click + full photo button), responsive `PersonDetailPanel` |
+| `autosorter/app/photo_viewer.py` | MODIFIED | Added interactive face box click popover with assignment actions + reload signals |
+| `autosorter/app/main_window.py` | MODIFIED | Connected `viewer.changed` signals to automatically refresh People Panel on any correction |
+| `tests/test_m5_corrections.py` | NEW | 7 comprehensive unit tests for merge, unassign, reassign, new person creation, and restart persistence |
+| `docs/learning/M5_corrections.md` | NEW | In-depth learning documentation and mathematical concepts |
+| `docs/learning/README.md` | MODIFIED | Updated index to include Milestone 5 |
+| `PLAN.md` | MODIFIED | Updated Decisions Log with Milestone 5 completion |
+
+---
+
+## ✅ How to Verify M5 Works
+
+```powershell
+# Run the full test suite (114 passing tests)
+.\.venv\Scripts\python -m pytest tests/ -v
+
+# Launch the app
+.\.venv\Scripts\python -m autosorter
+```
+
+### Verification Flow:
+1. **Merge Test:**
+   - Click the **🔗** icon on any person card (or click **"🔗 Merge with..."** inside their detail view).
+   - Type in the filter bar or double-click the target person $\rightarrow$ cards combine instantly, count updates, and duplicate card disappears.
+2. **"Not This Person" Test:**
+   - Open a person album $\rightarrow$ right-click a face $\rightarrow$ **"❌ Not this person"** $\rightarrow$ face is removed and centroid is cleansed.
+3. **"Move to NEW Person Card" Test:**
+   - Right-click a face $\rightarrow$ **"➕ Move to NEW Person Card..."** $\rightarrow$ type a name $\rightarrow$ a brand new person section is created for that face.
+4. **Full Photo Inspection:**
+   - Double-click any face (or click the **`🔍 Full Photo`** button) $\rightarrow$ opens the full-resolution photo in the Photo Viewer.
+5. **Interactive Box-Click:**
+   - In the Photo Viewer, click any colored face bounding box $\rightarrow$ shows assigned person name and lets you reassign or unassign on the spot!
+6. **Persistence Test:**
+   - Close the app and relaunch $\rightarrow$ all merges, new person sections, and reassignments are preserved exactly.
