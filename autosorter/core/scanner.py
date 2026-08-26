@@ -38,6 +38,7 @@ class ScanResult(NamedTuple):
     new: int      # files that were added to the database
     skipped: int  # files already in DB and unchanged
     errors: int   # files that caused problems (permissions, etc.)
+    discovered_paths: set  # all image paths found on disk (for missing detection)
 
 
 # The set of file extensions we consider "photos".
@@ -146,6 +147,7 @@ def scan_folder(
     new = 0
     skipped = 0
     errors = 0
+    discovered_paths: set = set()  # Track all image paths found on disk (M6)
 
     # We use a manual stack instead of os.walk() for two reasons:
     # 1. We can check cancel_check between directories
@@ -198,6 +200,7 @@ def scan_folder(
                     continue  # Not an image, skip silently
 
                 found += 1
+                discovered_paths.add(entry.path)  # M6: track for missing detection
 
                 try:
                     # Get file metadata from the operating system
@@ -225,4 +228,7 @@ def scan_folder(
                 if progress_callback:
                     progress_callback(found, new, skipped)
 
-    return ScanResult(found=found, new=new, skipped=skipped, errors=errors)
+    return ScanResult(
+        found=found, new=new, skipped=skipped, errors=errors,
+        discovered_paths=discovered_paths,
+    )

@@ -1,26 +1,30 @@
 """
-Main application window — M4: Scan + Detect + Identify People + People Panel.
+Main application window — M6: Unified Pipeline + Resume.
 
-=== WHAT CHANGED FROM M3? ===
-M3 had: scan, face detection + embedding, thumbnail grid, photo viewer, find similar.
-M4 adds:
-  1. "Identify People" button — clusters faces into person groups
-  2. People panel — shows person cards with face thumbs, rename capability
-  3. Identity progress — "Identifying people: 42 / 127 faces (8 people found)"
+=== WHAT CHANGED FROM M5? ===
+M5 had: 3 separate buttons (Start Scan, Detect Faces, Identify People)
+M6 replaces them with:
+  1. Single "▶ Start" button → runs all 4 stages automatically
+  2. "▶ Resume" button text when previous run was interrupted
+  3. Library state summary on folder selection
+  4. Stage-aware progress display: "Stage 2/4: Detecting faces… 12/340"
 
-=== UI LAYOUT (M4) ===
+=== UI LAYOUT (M6) ===
 ┌─────────────────────────────────────────────────────┐
 │  Auto-Sorter 0.1.0                                  │
 ├─────────────────────────────────────────────────────┤
 │ 📁 Photo folder: D:\\Photos               [Browse]  │
 │ 📁 Data folder:  (auto)                   [Browse]  │
 │                                                     │
-│ [▶ Start Scan] [🔍 Detect Faces] [👤 Identify]     │
+│ Library: 1,234 photos · 456 faces · 12 people       │
+│ 50 new photos found                                 │
 │                                                     │
-│ Progress: Identifying 42/127 faces (8 people)       │
+│ [▶ Start] [Cancel]                                  │
+│                                                     │
+│ Stage 2/4: Detecting faces…  12/340 images          │
 │ ████████████████████░░░░░░░░  33%                   │
 │                                                     │
-│ ┌──── People (8 found) ────────────────────────┐    │
+│ ┌──── People (12 found) ───────────────────────┐    │
 │ │ ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐        │    │
 │ │ │(face)│ │(face)│ │(face)│ │(face)│        │    │
 │ │ │Arnav │ │ Mom  │ │Per.3 │ │Per.4 │        │    │
@@ -32,13 +36,8 @@ M4 adds:
 │ │thumb│ │thumb│ │thumb│ │thumb│ │thumb│ ...        │
 │ └─────┘ └─────┘ └─────┘ └─────┘ └─────┘          │
 │                                                     │
-│ Status: ✅ 8 people found. Click a card to view.   │
+│ Status: ✅ Done. 1,234 photos · 12 people.         │
 └─────────────────────────────────────────────────────┘
-
-=== NEW CONCEPT: QFlowLayout (custom layout) ===
-Qt doesn't have a built-in "flow layout" (like CSS flexbox wrap).
-We simulate one by placing thumbnails in a grid inside a scroll area.
-Each thumbnail is a clickable QLabel with a pixmap.
 """
 
 from pathlib import Path
@@ -60,9 +59,7 @@ from PySide6.QtWidgets import (
 
 from autosorter import __version__
 from autosorter.core.db import Database
-from autosorter.core.detect_worker import DetectWorker
-from autosorter.core.identity_worker import IdentityWorker
-from autosorter.core.scan_worker import ScanWorker
+from autosorter.core.pipeline_worker import PipelineWorker
 from autosorter.app.photo_viewer import PhotoViewer
 from autosorter.app.people_panel import PeoplePanel
 
@@ -130,7 +127,7 @@ class ClickableThumb(QLabel):
 
 
 class MainWindow(QMainWindow):
-    """The main application window with scan, detection, identity, and photo grid."""
+    """The main application window with unified pipeline and photo grid."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -142,9 +139,7 @@ class MainWindow(QMainWindow):
         # --- State ---
         self._photo_folder: Path | None = None
         self._data_folder: Path | None = None
-        self._worker: ScanWorker | None = None
-        self._detect_worker: DetectWorker | None = None
-        self._identity_worker: IdentityWorker | None = None
+        self._pipeline_worker: PipelineWorker | None = None
         self._viewers: list = []  # Keep references to open PhotoViewer windows
 
         self._build_ui()
@@ -197,59 +192,47 @@ class MainWindow(QMainWindow):
 
         layout.addSpacing(4)
 
-        # --- Action buttons row ---
+        # --- Library state summary (M6) ---
+        self._library_label = QLabel("")
+        self._library_label.setStyleSheet("font-size: 13px; color: #555;")
+        self._library_label.setVisible(False)
+        layout.addWidget(self._library_label)
+
+        # --- Action buttons row (M6: single Start button) ---
         btn_row = QHBoxLayout()
 
-        self._start_btn = QPushButton("▶  Start Scan")
+        self._start_btn = QPushButton("▶  Start")
         self._start_btn.setFixedHeight(36)
         self._start_btn.setStyleSheet(
             "font-size: 14px; font-weight: bold; padding: 4px 20px;"
         )
-        self._start_btn.clicked.connect(self._start_scan)
+        self._start_btn.clicked.connect(self._start_pipeline)
         self._start_btn.setEnabled(False)
         btn_row.addWidget(self._start_btn)
 
-        # NEW in M2: Detect Faces button
-        self._detect_btn = QPushButton("🔍  Detect Faces")
-        self._detect_btn.setFixedHeight(36)
-        self._detect_btn.setStyleSheet(
-            "font-size: 14px; font-weight: bold; padding: 4px 20px;"
-        )
-        self._detect_btn.clicked.connect(self._start_detection)
-        self._detect_btn.setVisible(False)  # Hidden until scan completes
-        btn_row.addWidget(self._detect_btn)
-
-        # NEW in M4: Identify People button
-        self._identify_btn = QPushButton("👤  Identify People")
-        self._identify_btn.setFixedHeight(36)
-        self._identify_btn.setStyleSheet(
-            "font-size: 14px; font-weight: bold; padding: 4px 20px;"
-        )
-        self._identify_btn.clicked.connect(self._start_identity)
-        self._identify_btn.setVisible(False)  # Hidden until detection completes
-        btn_row.addWidget(self._identify_btn)
-
         self._cancel_btn = QPushButton("Cancel")
         self._cancel_btn.setFixedHeight(36)
-        self._cancel_btn.clicked.connect(self._cancel_action)
+        self._cancel_btn.clicked.connect(self._cancel_pipeline)
         self._cancel_btn.setVisible(False)
         btn_row.addWidget(self._cancel_btn)
 
         btn_row.addStretch()
         layout.addLayout(btn_row)
 
+        # --- Stage label (M6: shows current stage) ---
+        self._stage_label = QLabel("")
+        self._stage_label.setStyleSheet("font-size: 13px; font-weight: bold;")
+        self._stage_label.setVisible(False)
+        layout.addWidget(self._stage_label)
+
         # --- Progress area ---
         self._progress_bar = QProgressBar()
         self._progress_bar.setVisible(False)
         layout.addWidget(self._progress_bar)
 
-        self._scan_label = QLabel("")
-        self._scan_label.setVisible(False)
-        layout.addWidget(self._scan_label)
-
-        self._thumb_label = QLabel("")
-        self._thumb_label.setVisible(False)
-        layout.addWidget(self._thumb_label)
+        self._progress_label = QLabel("")
+        self._progress_label.setVisible(False)
+        layout.addWidget(self._progress_label)
 
         # --- People panel (M4) ---
         self._people_panel: PeoplePanel | None = None
@@ -299,7 +282,9 @@ class MainWindow(QMainWindow):
                 self._data_path_label.setText(str(self._data_folder))
 
             self._start_btn.setEnabled(True)
-            self._status_label.setText("Ready — click Start Scan.")
+
+            # Show library state if DB already exists (M6: resume support)
+            self._update_library_summary()
 
     def _pick_data_folder(self) -> None:
         folder = QFileDialog.getExistingDirectory(
@@ -310,160 +295,233 @@ class MainWindow(QMainWindow):
             self._data_path_label.setText(folder)
             self._data_path_label.setStyleSheet("")
 
-    # ==================================================================
-    # Scan control (M1)
-    # ==================================================================
+            # Update library summary with new data folder
+            self._update_library_summary()
 
-    def _start_scan(self) -> None:
-        if self._photo_folder is None or self._data_folder is None:
-            return
+    def _update_library_summary(self) -> None:
+        """
+        Show a summary of the existing library state (M6).
 
-        self._worker = ScanWorker(self._photo_folder, self._data_folder)
-        self._worker.scan_progress.connect(self._on_scan_progress)
-        self._worker.thumb_progress.connect(self._on_thumb_progress)
-        self._worker.finished.connect(self._on_scan_finished)
-        self._worker.error.connect(self._on_error)
-
-        self._start_btn.setEnabled(False)
-        self._detect_btn.setVisible(False)
-        self._identify_btn.setVisible(False)
-        self._cancel_btn.setVisible(True)
-        self._progress_bar.setVisible(True)
-        self._progress_bar.setRange(0, 0)
-        self._scan_label.setVisible(True)
-        self._scan_label.setText("Phase 1: Discovering images…")
-        self._thumb_label.setVisible(False)
-        self._status_label.setText("Scanning…")
-
-        self._worker.start()
-
-    # ==================================================================
-    # Detection control (M2)
-    # ==================================================================
-
-    def _start_detection(self) -> None:
-        """Launch face detection on all scanned images."""
+        If the database already exists from a previous run, show counts
+        and change the button text to "Resume" instead of "Start".
+        """
         if self._data_folder is None:
             return
 
-        self._detect_worker = DetectWorker(self._data_folder)
-        self._detect_worker.progress.connect(self._on_detect_progress)
-        self._detect_worker.finished.connect(self._on_detect_finished)
-        self._detect_worker.error.connect(self._on_error)
+        db_path = self._data_folder / "library.db"
+        if not db_path.is_file():
+            self._library_label.setVisible(False)
+            self._start_btn.setText("▶  Start")
+            self._status_label.setText("Ready — click Start.")
+            return
+
+        try:
+            db = Database(db_path)
+            state = db.get_pipeline_state()
+            db.close()
+
+            parts = []
+            if state["total"] > 0:
+                parts.append(f"{state['total']} photos")
+            if state["faces"] > 0:
+                parts.append(f"{state['faces']} faces")
+            if state["persons"] > 0:
+                parts.append(f"{state['persons']} people")
+
+            if parts:
+                self._library_label.setText(
+                    f"📚 Library: {' · '.join(parts)}"
+                )
+                self._library_label.setVisible(True)
+
+            # Decide button text: "Start" vs "Resume" vs "Re-Scan"
+            has_work = (
+                state["pending"] > 0
+                or state["needs_detection"] > 0
+                or state["unassigned"] > 0
+            )
+            if state["total"] == 0:
+                self._start_btn.setText("▶  Start")
+                self._status_label.setText("Ready — click Start to begin scanning.")
+            elif has_work:
+                self._start_btn.setText("▶  Resume")
+                self._status_label.setText(
+                    f"Previous run interrupted. "
+                    f"{state['pending']} pending, "
+                    f"{state['unassigned']} unassigned faces."
+                )
+            else:
+                self._start_btn.setText("▶  Re-Scan")
+                self._status_label.setText(
+                    f"✅ Library up to date. Click Re-Scan to check for new photos."
+                )
+
+            # Auto-load existing data
+            if state["total"] > 0:
+                self._load_thumbnail_grid()
+            if state["persons"] > 0:
+                self._show_people_panel()
+
+        except Exception:
+            self._library_label.setVisible(False)
+            self._start_btn.setText("▶  Start")
+
+    # ==================================================================
+    # Pipeline control (M6)
+    # ==================================================================
+
+    def _start_pipeline(self) -> None:
+        """Launch the unified pipeline (scan → detect → embed → cluster)."""
+        if self._photo_folder is None or self._data_folder is None:
+            return
+
+        self._pipeline_worker = PipelineWorker(
+            self._photo_folder, self._data_folder
+        )
+        self._pipeline_worker.stage_changed.connect(self._on_stage_changed)
+        self._pipeline_worker.progress.connect(self._on_pipeline_progress)
+        self._pipeline_worker.finished.connect(self._on_pipeline_finished)
+        self._pipeline_worker.error.connect(self._on_error)
 
         self._start_btn.setEnabled(False)
-        self._detect_btn.setEnabled(False)
         self._cancel_btn.setVisible(True)
+        self._cancel_btn.setEnabled(True)
+        self._cancel_btn.setText("Cancel")
         self._progress_bar.setVisible(True)
-        self._progress_bar.setRange(0, 0)
-        self._scan_label.setVisible(True)
-        self._scan_label.setText("Detecting faces…")
-        self._thumb_label.setVisible(False)
-        self._status_label.setText("Running face detection…")
+        self._progress_bar.setRange(0, 0)  # indeterminate initially
+        self._stage_label.setVisible(True)
+        self._stage_label.setText("Starting pipeline…")
+        self._progress_label.setVisible(True)
+        self._status_label.setText("Pipeline running…")
+        self._status_label.setStyleSheet(
+            "color: gray; border-top: 1px solid #ddd; padding-top: 8px;"
+        )
 
-        self._detect_worker.start()
+        self._pipeline_worker.start()
 
-    def _cancel_action(self) -> None:
-        """Cancel whichever worker is currently running."""
-        if self._worker:
-            self._worker.cancel()
-        if self._detect_worker:
-            self._detect_worker.cancel()
-        if self._identity_worker:
-            self._identity_worker.cancel()
+    def _cancel_pipeline(self) -> None:
+        """Cancel the running pipeline."""
+        if self._pipeline_worker:
+            self._pipeline_worker.cancel()
         self._cancel_btn.setEnabled(False)
         self._cancel_btn.setText("Cancelling…")
         self._status_label.setText("Cancelling… (finishing current item)")
 
     # ==================================================================
-    # Signal handlers — Scan (M1)
+    # Signal handlers — Pipeline (M6)
     # ==================================================================
 
-    def _on_scan_progress(self, found: int, new: int, skipped: int) -> None:
-        self._scan_label.setText(
-            f"Phase 1: Found {found} images ({new} new, {skipped} unchanged)"
+    def _on_stage_changed(self, stage_name: str, stage_num: int,
+                          total_stages: int) -> None:
+        """Update UI when pipeline moves to a new stage."""
+        self._stage_label.setText(
+            f"Stage {stage_num}/{total_stages}: {stage_name}"
         )
+        # Reset progress bar to indeterminate for the new stage
+        self._progress_bar.setRange(0, 0)
 
-    def _on_thumb_progress(self, done: int, total: int) -> None:
-        self._progress_bar.setRange(0, total)
-        self._progress_bar.setValue(done)
-        self._thumb_label.setVisible(True)
-        self._thumb_label.setText(f"Phase 2: Thumbnails {done} / {total}")
+    def _on_pipeline_progress(self, done: int, total: int,
+                              detail: str) -> None:
+        """Update progress bar and label during pipeline execution."""
+        if total > 0:
+            self._progress_bar.setRange(0, total)
+            self._progress_bar.setValue(done)
+        self._progress_label.setText(detail)
 
-    def _on_scan_finished(self, total: int, errors: int) -> None:
+    def _on_pipeline_finished(self, summary: dict) -> None:
+        """Handle pipeline completion — show results and enable re-scan."""
         self._start_btn.setEnabled(True)
-        self._start_btn.setText("▶  Re-Scan")
         self._cancel_btn.setVisible(False)
         self._cancel_btn.setEnabled(True)
         self._cancel_btn.setText("Cancel")
         self._progress_bar.setVisible(False)
+        self._stage_label.setVisible(False)
+        self._progress_label.setVisible(False)
 
-        # Show the Detect Faces button
-        self._detect_btn.setVisible(True)
-        self._detect_btn.setEnabled(True)
+        # Build summary message
+        if summary.get("cancelled"):
+            self._start_btn.setText("▶  Resume")
+            self._status_label.setText(
+                f"⏸️ Paused. "
+                f"{summary['files_found']} files found, "
+                f"{summary['faces_detected']} faces. "
+                f"Click Resume to continue."
+            )
+        else:
+            self._start_btn.setText("▶  Re-Scan")
 
-        error_text = f", {errors} errors" if errors else ""
-        self._status_label.setText(
-            f"✅ Scan complete: {total} images found{error_text}. "
-            f"Click 'Detect Faces' to find faces."
-        )
-        self._worker = None
+            parts = []
+            if summary["files_new"] > 0:
+                parts.append(f"{summary['files_new']} new photos processed")
+            if summary["files_reattached"] > 0:
+                parts.append(f"{summary['files_reattached']} moved files reattached")
+            if summary["files_missing"] > 0:
+                parts.append(f"{summary['files_missing']} files missing")
+            if summary["faces_detected"] > 0:
+                parts.append(f"{summary['faces_detected']} faces found")
+            if summary["persons_found"] > 0:
+                parts.append(f"{summary['persons_found']} people")
+            if summary["errors"] > 0:
+                parts.append(f"{summary['errors']} errors")
 
-        # Load the thumbnail grid
+            if parts:
+                self._status_label.setText(f"✅ Done. {'. '.join(parts)}.")
+            else:
+                self._status_label.setText("✅ Library up to date. No new photos found.")
+
+        self._pipeline_worker = None
+
+        # Refresh thumbnail grid and people panel
         self._load_thumbnail_grid()
+        self._update_library_summary_after_pipeline()
 
-    # ==================================================================
-    # Signal handlers — Detection (M2 + M3)
-    # ==================================================================
+    def _update_library_summary_after_pipeline(self) -> None:
+        """Update library label and auto-show people panel after pipeline."""
+        if self._data_folder is None:
+            return
 
-    def _on_detect_progress(self, done: int, total: int, faces: int,
-                            embedded: int) -> None:
-        self._progress_bar.setRange(0, total)
-        self._progress_bar.setValue(done)
-        self._scan_label.setText(
-            f"Detecting faces: {done}/{total} images  "
-            f"({faces} faces, {embedded} embeddings)"
-        )
+        db_path = self._data_folder / "library.db"
+        if not db_path.is_file():
+            return
 
-    def _on_detect_finished(self, total_images: int, total_faces: int,
-                            total_embedded: int, errors: int) -> None:
-        self._start_btn.setEnabled(True)
-        self._detect_btn.setEnabled(True)
-        self._detect_btn.setText("🔍  Re-Detect")
-        self._cancel_btn.setVisible(False)
-        self._cancel_btn.setEnabled(True)
-        self._cancel_btn.setText("Cancel")
-        self._progress_bar.setVisible(False)
-        self._scan_label.setVisible(False)
+        try:
+            db = Database(db_path)
+            state = db.get_pipeline_state()
+            db.close()
 
-        # Show Identify People button
-        self._identify_btn.setVisible(True)
-        self._identify_btn.setEnabled(True)
+            parts = []
+            if state["total"] > 0:
+                parts.append(f"{state['total']} photos")
+            if state["faces"] > 0:
+                parts.append(f"{state['faces']} faces")
+            if state["persons"] > 0:
+                parts.append(f"{state['persons']} people")
 
-        error_text = f", {errors} errors" if errors else ""
-        self._status_label.setText(
-            f"✅ Detection complete: {total_faces} faces, {total_embedded} embeddings "
-            f"in {total_images} images{error_text}. "
-            f"Click 'Identify People' to discover people."
-        )
-        self._detect_worker = None
+            if parts:
+                self._library_label.setText(
+                    f"📚 Library: {' · '.join(parts)}"
+                )
+                self._library_label.setVisible(True)
 
-    # ==================================================================
-    # Common signal handlers
-    # ==================================================================
+            if state["persons"] > 0:
+                self._show_people_panel()
+
+        except Exception:
+            pass
 
     def _on_error(self, message: str) -> None:
+        """Handle pipeline errors."""
         self._start_btn.setEnabled(True)
-        self._detect_btn.setEnabled(True)
+        self._start_btn.setText("▶  Resume")
         self._cancel_btn.setVisible(False)
         self._progress_bar.setVisible(False)
+        self._stage_label.setVisible(False)
+        self._progress_label.setVisible(False)
         self._status_label.setText(f"❌ Error: {message}")
         self._status_label.setStyleSheet(
             "color: red; border-top: 1px solid #ddd; padding-top: 8px;"
         )
-        self._worker = None
-        self._detect_worker = None
-        self._identity_worker = None
+        self._pipeline_worker = None
 
     # ==================================================================
     # Thumbnail Grid (M2)
@@ -540,67 +598,6 @@ class MainWindow(QMainWindow):
         """When face assignments change in photo viewer, reload people panel."""
         if self._people_panel is not None:
             self._people_panel.load_persons()
-
-    # ==================================================================
-    # Identity control (M4)
-    # ==================================================================
-
-    def _start_identity(self) -> None:
-        """Launch face clustering to discover people."""
-        if self._data_folder is None:
-            return
-
-        self._identity_worker = IdentityWorker(self._data_folder)
-        self._identity_worker.progress.connect(self._on_identity_progress)
-        self._identity_worker.finished.connect(self._on_identity_finished)
-        self._identity_worker.error.connect(self._on_error)
-
-        self._start_btn.setEnabled(False)
-        self._detect_btn.setEnabled(False)
-        self._identify_btn.setEnabled(False)
-        self._cancel_btn.setVisible(True)
-        self._progress_bar.setVisible(True)
-        self._progress_bar.setRange(0, 0)
-        self._scan_label.setVisible(True)
-        self._scan_label.setText("Identifying people…")
-        self._thumb_label.setVisible(False)
-        self._status_label.setText("Running face clustering…")
-
-        self._identity_worker.start()
-
-    # ==================================================================
-    # Signal handlers — Identity (M4)
-    # ==================================================================
-
-    def _on_identity_progress(self, done: int, total: int,
-                              persons: int) -> None:
-        self._progress_bar.setRange(0, total)
-        self._progress_bar.setValue(done)
-        self._scan_label.setText(
-            f"Identifying people: {done}/{total} faces  "
-            f"({persons} people found)"
-        )
-
-    def _on_identity_finished(self, total_assigned: int,
-                              total_persons: int) -> None:
-        self._start_btn.setEnabled(True)
-        self._detect_btn.setEnabled(True)
-        self._identify_btn.setEnabled(True)
-        self._identify_btn.setText("👤  Re-Identify")
-        self._cancel_btn.setVisible(False)
-        self._cancel_btn.setEnabled(True)
-        self._cancel_btn.setText("Cancel")
-        self._progress_bar.setVisible(False)
-        self._scan_label.setVisible(False)
-
-        self._status_label.setText(
-            f"✅ {total_persons} people found from {total_assigned} faces. "
-            f"Click a person card to view or rename."
-        )
-        self._identity_worker = None
-
-        # Show the people panel
-        self._show_people_panel()
 
     # ==================================================================
     # People Panel (M4)

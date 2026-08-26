@@ -9,8 +9,8 @@
 - [x] **M2** — Face detection (worker pool) + face thumbs + boxes in viewer
 - [x] **M3** — Faceprints (align + SFace) stored; dev "find similar" panel
 - [x] **M4** — People discovery + rename (incremental centroid clustering, person cards, inline rename)
-- [ ] **M5** — Corrections: merge, not-this-person, reassign, box-click assign
-- [ ] **M6** — Resume/incremental: kill-and-relaunch resume, new-photos-only, moved-file reattach
+- [x] **M5** — Corrections: merge, not-this-person, reassign, box-click assign
+- [x] **M6** — Resume/incremental: kill-and-relaunch resume, new-photos-only, moved-file reattach
 - [ ] **M7** — Albums (Group/Unknown/Review/Text&Docs) + optional Export
 - [ ] **M8** — Performance: 20k+ test, speed dial tuning, low-spec benchmark, memory cap
 - [ ] **M9** — PyInstaller + Inno Setup installer, verified offline on clean Windows
@@ -152,7 +152,7 @@ d:\Auto_sorter\
 | M3 | Faceprints (align + SFace) stored; dev "find similar" panel | same-person similarity clearly > different-person |
 | M4 | **People discovery + rename** ← first full vertical slice | on 1–3k personal photos: top people found, zero wrong merges, rename survives restart |
 | M5 | **Corrections: merge, not-this-person, reassign, box-click assign** | every correction survives restart + full re-scan |
-| M6 | Resume/incremental: kill-and-relaunch resume, new-photos-only, moved-file reattach | kill mid-scan → resumes exactly; new photos of named person auto-file |
+| M6 | **Resume/incremental: kill-and-relaunch resume, new-photos-only, moved-file reattach** | kill mid-scan → resumes exactly; new photos of named person auto-file |
 | M7 | Albums (Group/Unknown/Review/Text&Docs) + optional Export | group photo under each person with ONE file on disk; export never touches sources |
 | M8 | Performance: 20k+ test, speed dial tuning, low-spec benchmark, memory cap verified | documented img/s on min-spec machine; RAM < 1.5 GB; multiprocessing fallback if threads underperform |
 | M9 | PyInstaller + Inno Setup installer | clean Windows VM, **network disabled**: install → scan → name → restart → resume all work; zero network calls observed |
@@ -180,3 +180,4 @@ OCR/search, semantic search, pets/objects, video, blur/best-shot detection, dupl
 - 2026-08-22 — M3 done. Face embeddings using SFace, 128-d L2 normalized faceprints in BLOB storage, Dev Find Similar matrix search panel.
 - 2026-08-23 — M4 done. Incremental centroid clustering with drift protection and member validation, person cards, inline renaming.
 - 2026-08-24 — M5 done. Manual corrections: 1-click merge cards with live search filter, "Not this person", "Move to...", "Create new person card", cover photo selection, and interactive box-click assignment in full photo viewer. All 114 tests passing.
+- 2026-08-27 — M6 done. Unified single-button pipeline (scan→detect→embed→cluster), crash-safe SQLite resume, SHA-256 moved-file reattach, missing-file detection, true upsert fix (INSERT OR REPLACE → ON CONFLICT preserving faces). All 129 tests passing.

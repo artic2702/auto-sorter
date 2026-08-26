@@ -284,19 +284,29 @@ class Database:
         "Upsert" = "Update or Insert". This is important because:
         - First scan: file is new → INSERT a row with status='pending'
         - Re-scan: file changed → UPDATE the existing row with new size/mtime
-        - This single method handles both cases cleanly.
+
+        === CRITICAL FIX (M6) ===
+        Previously used INSERT OR REPLACE, which DELETES the old row and inserts
+        a new one. Because faces have ON DELETE CASCADE, this silently destroyed
+        ALL linked faces, embeddings, and person assignments on every re-scan!
+
+        Now uses INSERT ... ON CONFLICT(path) DO UPDATE, which updates the row
+        IN PLACE — preserving the row ID and all foreign-key relationships.
 
         Returns:
             The row ID of the inserted/updated image.
         """
-        # "INSERT OR REPLACE" is SQLite's upsert. Because 'path' has a UNIQUE
-        # constraint, if a row with this path already exists, it gets replaced.
         cursor = self._conn.execute(
             """
-            INSERT OR REPLACE INTO images
+            INSERT INTO images
                 (path, size, mtime, sha256, width, height, taken_at,
                  thumb_path, status, error)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(path) DO UPDATE SET
+                size   = excluded.size,
+                mtime  = excluded.mtime,
+                status = excluded.status,
+                error  = excluded.error
             """,
             (path, size, mtime, sha256, width, height, taken_at,
              thumb_path, status, error),
@@ -1060,6 +1070,148 @@ class Database:
             self.recompute_person_centroid(old_person_id)
 
         return person_id
+
+    # ------------------------------------------------------------------
+    # M6: Resume & Incremental Scan
+    # ------------------------------------------------------------------
+
+    def mark_missing_images(self, known_paths: set) -> int:
+        """
+        Mark images whose paths are no longer on disk as status='missing'.
+
+        Called after scanning: we compare the set of paths we just found on
+        disk against all paths in the DB. Any DB path NOT in the set is a
+        file that was deleted or moved.
+
+        We do NOT delete the row — the user might restore the file, or it
+        might have been moved (reattach_by_hash handles that). We just
+        set status='missing' so they don't appear in the photo grid.
+
+        Args:
+            known_paths: Set of all file paths currently on disk (as strings).
+
+        Returns:
+            Number of images marked as missing.
+        """
+        cursor = self._conn.execute(
+            "SELECT id, path FROM images WHERE status != 'missing'"
+        )
+        rows = cursor.fetchall()
+
+        missing_count = 0
+        for row in rows:
+            if row["path"] not in known_paths:
+                self._conn.execute(
+                    "UPDATE images SET status = 'missing' WHERE id = ?",
+                    (row["id"],),
+                )
+                missing_count += 1
+
+        if missing_count > 0:
+            self._conn.commit()
+
+        return missing_count
+
+    def reattach_by_hash(self, sha256: str, new_path: str) -> Optional[int]:
+        """
+        Reattach a moved/renamed file by matching its SHA-256 hash.
+
+        When a file appears at a new path but its content hash matches an
+        existing DB row (possibly marked 'missing'), we update the path
+        in-place. All faces, embeddings, and person assignments are preserved.
+
+        This is the key to handling moved/renamed files gracefully:
+        - User moves vacation/beach.jpg → 2024/beach.jpg
+        - SHA-256 matches → update path, set status='processed'
+        - All 3 detected faces and their person links survive!
+
+        Args:
+            sha256:   The SHA-256 hash of the new file.
+            new_path: The new file path.
+
+        Returns:
+            The image ID if reattached, or None if no hash match found.
+        """
+        if not sha256:
+            return None
+
+        cursor = self._conn.execute(
+            """
+            SELECT id, path FROM images
+            WHERE sha256 = ? AND path != ?
+            ORDER BY
+                CASE status WHEN 'missing' THEN 0 ELSE 1 END,
+                id
+            LIMIT 1
+            """,
+            (sha256, new_path),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return None
+
+        # Update path in-place — preserves row ID and all linked faces
+        self._conn.execute(
+            """
+            UPDATE images SET path = ?, status = 'processed'
+            WHERE id = ?
+            """,
+            (new_path, row["id"]),
+        )
+        self._conn.commit()
+        return row["id"]
+
+    def get_all_image_paths(self) -> set:
+        """
+        Return a set of all image paths in the database.
+
+        Used by the scanner to detect which files are new vs already known.
+        Returns paths for ALL statuses (including 'missing') so we can
+        detect files that reappear at the same path.
+        """
+        cursor = self._conn.execute("SELECT path FROM images")
+        return {row["path"] for row in cursor.fetchall()}
+
+    def get_pipeline_state(self) -> dict:
+        """
+        Return a summary of the library state for the UI.
+
+        This powers the "Library: 1,234 photos, 456 faces, 12 people" display
+        and helps decide whether to show "Start" or "Resume".
+
+        Returns:
+            A dict with keys: total, processed, pending, missing, error,
+            faces, embedded, unassigned, persons.
+        """
+        def _count(sql):
+            return self._conn.execute(sql).fetchone()[0]
+
+        return {
+            "total": _count("SELECT COUNT(*) FROM images WHERE status != 'missing'"),
+            "processed": _count("SELECT COUNT(*) FROM images WHERE status = 'processed'"),
+            "pending": _count("SELECT COUNT(*) FROM images WHERE status = 'pending'"),
+            "missing": _count("SELECT COUNT(*) FROM images WHERE status = 'missing'"),
+            "error": _count("SELECT COUNT(*) FROM images WHERE status = 'error'"),
+            "faces": _count("SELECT COUNT(*) FROM faces WHERE det_score > 0"),
+            "embedded": _count(
+                "SELECT COUNT(*) FROM faces WHERE embedding IS NOT NULL AND det_score > 0"
+            ),
+            "unassigned": _count(
+                "SELECT COUNT(*) FROM faces WHERE embedding IS NOT NULL "
+                "AND person_id IS NULL AND det_score > 0"
+            ),
+            "persons": _count(
+                "SELECT COUNT(*) FROM persons WHERE hidden = 0 AND merged_into IS NULL"
+            ),
+            "needs_detection": _count(
+                """
+                SELECT COUNT(*)
+                FROM images i
+                LEFT JOIN faces f ON f.image_id = i.id
+                WHERE i.status = 'processed' AND f.id IS NULL
+                """
+            ),
+        }
 
     # ------------------------------------------------------------------
     # Lifecycle
