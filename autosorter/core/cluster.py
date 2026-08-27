@@ -68,27 +68,27 @@ from autosorter.core.face_embed import FaceRecognizer
 # ══════════════════════════════════════════════════════════════════
 
 # Above this score: candidate for AUTO-ASSIGN to the best-matching person.
-T_HIGH = 0.42
+T_HIGH = 0.48
 
 # Strong match threshold: when similarity to centroid is this high,
 # margin check between competing candidates is relaxed because competing
 # candidates are often split clusters of the same identity.
-T_STRONG = 0.46
+T_STRONG = 0.55
 
 # Top-K member validation threshold:
 # Checks average similarity to the top 5 most similar confirmed faces of the person.
 # Prevents centroid drift while allowing natural variation in expressions, angles, and lighting.
 TOP_K_MEMBERS = 5
-T_TOP_K = 0.38
+T_TOP_K = 0.44
 
 # Review threshold for uncertain matches
-T_REVIEW = 0.34
+T_REVIEW = 0.38
 
 # Best match must beat second-best by at least this margin when in borderline range (T_HIGH <= score < T_STRONG).
 MARGIN_MIN = 0.02
 
 # Centroid cosine similarity threshold for merging split clusters in the consolidation pass.
-T_MERGE_CENTROIDS = 0.42
+T_MERGE_CENTROIDS = 0.54
 
 # Faces below this quality threshold are skipped for clustering.
 MIN_QUALITY_FOR_CLUSTERING = 0.25
@@ -230,7 +230,7 @@ class ClusterEngine:
             pid = self._person_ids[i]
             score = float(similarities[i])
             if image_id and image_id in self._person_image_ids.get(pid, set()):
-                if score < 0.65:
+                if score < 0.95:
                     continue
             valid_indices.append(i)
 
@@ -448,9 +448,9 @@ def consolidate_clusters(db: Database, merge_threshold: float = T_MERGE_CENTROID
                 sim = float(sim_mat[i, j])
 
                 # Co-occurrence cannot-link: cannot merge if both persons appear in the same image
-                # unless similarity is near-identical (> 0.65, e.g. mirror reflection / identical embeddings)
+                # unless similarity is near-identical (>= 0.95, e.g. mirror reflection / identical embeddings)
                 if person_image_map.get(p1["id"], set()) & person_image_map.get(p2["id"], set()):
-                    if sim < 0.65:
+                    if sim < 0.95:
                         continue
 
                 if sim >= merge_threshold and sim > best_sim:
