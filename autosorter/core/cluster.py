@@ -68,27 +68,27 @@ from autosorter.core.face_embed import FaceRecognizer
 # ══════════════════════════════════════════════════════════════════
 
 # Above this score: candidate for AUTO-ASSIGN to the best-matching person.
-T_HIGH = 0.44
+T_HIGH = 0.42
 
 # Strong match threshold: when similarity to centroid is this high,
 # margin check between competing candidates is relaxed because competing
 # candidates are often split clusters of the same identity.
-T_STRONG = 0.48
+T_STRONG = 0.46
 
 # Top-K member validation threshold:
 # Checks average similarity to the top 5 most similar confirmed faces of the person.
 # Prevents centroid drift while allowing natural variation in expressions, angles, and lighting.
 TOP_K_MEMBERS = 5
-T_TOP_K = 0.40
+T_TOP_K = 0.38
 
 # Review threshold for uncertain matches
-T_REVIEW = 0.36
+T_REVIEW = 0.34
 
 # Best match must beat second-best by at least this margin when in borderline range (T_HIGH <= score < T_STRONG).
 MARGIN_MIN = 0.02
 
 # Centroid cosine similarity threshold for merging split clusters in the consolidation pass.
-T_MERGE_CENTROIDS = 0.52
+T_MERGE_CENTROIDS = 0.42
 
 # Faces below this quality threshold are skipped for clustering.
 MIN_QUALITY_FOR_CLUSTERING = 0.25

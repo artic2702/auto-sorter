@@ -797,10 +797,34 @@ class PeoplePanel(QWidget):
 
         refresh_btn = QPushButton("Refresh")
         refresh_btn.setFixedHeight(28)
-        refresh_btn.clicked.connect(self.load_persons)
-        header_row.addWidget(refresh_btn)
-
         layout.addLayout(header_row)
+
+        # Filter buttons: Main People vs All People
+        filter_row = QHBoxLayout()
+        filter_row.setSpacing(8)
+
+        self._filter_main_btn = QPushButton("⭐ Main People (3+ photos)")
+        self._filter_main_btn.setCheckable(True)
+        self._filter_main_btn.setChecked(False)
+        self._filter_main_btn.setStyleSheet("""
+            QPushButton { background-color: #2b2b2b; color: #aaa; border: 1px solid #444; border-radius: 12px; padding: 4px 14px; font-size: 12px; }
+            QPushButton:checked { background-color: #1b5e20; color: #81c784; border: 1px solid #4caf50; font-weight: bold; }
+        """)
+        self._filter_main_btn.clicked.connect(self._on_filter_main_clicked)
+        filter_row.addWidget(self._filter_main_btn)
+
+        self._filter_all_btn = QPushButton("All People")
+        self._filter_all_btn.setCheckable(True)
+        self._filter_all_btn.setChecked(True)
+        self._filter_all_btn.setStyleSheet("""
+            QPushButton { background-color: #2b2b2b; color: #aaa; border: 1px solid #444; border-radius: 12px; padding: 4px 14px; font-size: 12px; }
+            QPushButton:checked { background-color: #0d47a1; color: #64b5f6; border: 1px solid #2196f3; font-weight: bold; }
+        """)
+        self._filter_all_btn.clicked.connect(self._on_filter_all_clicked)
+        filter_row.addWidget(self._filter_all_btn)
+
+        filter_row.addStretch()
+        layout.addLayout(filter_row)
 
         # Scrollable card grid
         self._scroll = QScrollArea()
@@ -839,10 +863,18 @@ class PeoplePanel(QWidget):
             self._title_label.setText("<b style='font-size: 16px;'>👤 People</b>")
             return
 
-        self._title_label.setText(
-            f"<b style='font-size: 16px;'>👤 People</b>"
-            f"  <span style='color: gray;'>({len(persons)} people found)</span>"
-        )
+        total_found = len(persons)
+        if hasattr(self, "_filter_main_btn") and self._filter_main_btn.isChecked():
+            persons = [p for p in persons if p["face_count"] >= 3 or p["name_is_user_set"] == 1]
+            self._title_label.setText(
+                f"<b style='font-size: 16px;'>👤 People</b>"
+                f"  <span style='color: gray;'>({len(persons)} main people shown · {total_found} total)</span>"
+            )
+        else:
+            self._title_label.setText(
+                f"<b style='font-size: 16px;'>👤 People</b>"
+                f"  <span style='color: gray;'>({total_found} people found)</span>"
+            )
 
         cols = max(1, (self.width() - 40) // 185)
         for i, person in enumerate(persons):
@@ -935,3 +967,13 @@ class PeoplePanel(QWidget):
                 "Re-Clustering Complete",
                 f"Finished! Clustered {assigned} faces into {count} people.",
             )
+
+    def _on_filter_main_clicked(self) -> None:
+        self._filter_main_btn.setChecked(True)
+        self._filter_all_btn.setChecked(False)
+        self.load_persons()
+
+    def _on_filter_all_clicked(self) -> None:
+        self._filter_all_btn.setChecked(True)
+        self._filter_main_btn.setChecked(False)
+        self.load_persons()
