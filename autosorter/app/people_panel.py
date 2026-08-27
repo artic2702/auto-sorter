@@ -445,6 +445,14 @@ class PersonDetailPanel(QWidget):
         recheck_btn.clicked.connect(self._on_recheck_clicked)
         header.addWidget(recheck_btn)
 
+        delete_btn = QPushButton("🗑️ Delete Person")
+        delete_btn.setToolTip("Completely delete this person card and unassign its photos")
+        delete_btn.setStyleSheet(
+            "background-color: #C62828; color: white; padding: 6px 14px; border-radius: 4px; font-weight: bold; font-size: 13px;"
+        )
+        delete_btn.clicked.connect(self._on_delete_person_clicked)
+        header.addWidget(delete_btn)
+
         layout.addLayout(header)
 
         # Subtitle hint
@@ -628,6 +636,23 @@ class PersonDetailPanel(QWidget):
         QMessageBox.information(self, "Re-Check Complete", msg)
         self._reload_data()
 
+    def _on_delete_person_clicked(self) -> None:
+        """Completely delete this person card and unassign its photos."""
+        reply = QMessageBox.question(
+            self,
+            "Delete Person",
+            f"Are you sure you want to completely delete '{self._person['display_name']}'?\n\n"
+            f"This will remove the person card and unassign all {len(self._faces)} photos.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            db = Database(self._data_folder / "library.db")
+            db.delete_person(self._person["id"])
+            db.close()
+            self.changed.emit()
+            self.close()
+
 
 
 class PersonCard(QWidget):
@@ -638,6 +663,7 @@ class PersonCard(QWidget):
     renamed = Signal(int, str)           # (person_id, new_name)
     clicked = Signal(int)                # (person_id)
     merge_requested = Signal(int, str)   # (person_id, display_name)
+    delete_requested = Signal(int, str)  # (person_id, display_name)
 
     def __init__(
         self,
@@ -735,10 +761,20 @@ class PersonCard(QWidget):
         self._rename_btn.clicked.connect(self._start_rename)
         bottom_row.addWidget(self._rename_btn)
 
+        self._delete_btn = QPushButton("🗑️")
+        self._delete_btn.setFixedSize(24, 24)
+        self._delete_btn.setToolTip("Delete this person card")
+        self._delete_btn.setStyleSheet("border: none; font-size: 13px; padding: 0; color: #aaa;")
+        self._delete_btn.clicked.connect(self._on_delete_clicked)
+        bottom_row.addWidget(self._delete_btn)
+
         layout.addLayout(bottom_row)
 
     def _on_merge_clicked(self) -> None:
         self.merge_requested.emit(self._person_id, self._display_name)
+
+    def _on_delete_clicked(self) -> None:
+        self.delete_requested.emit(self._person_id, self._display_name)
 
     def _apply_style(self, selected: bool = False) -> None:
         border = "#4CAF50" if selected else "#3a3a3a"
@@ -870,6 +906,7 @@ class PeoplePanel(QWidget):
             card.renamed.connect(self._on_person_renamed)
             card.clicked.connect(self._on_person_clicked)
             card.merge_requested.connect(self._on_card_merge_requested)
+            card.delete_requested.connect(self._on_card_delete_requested)
 
             row = i // cols
             col = i % cols
@@ -905,3 +942,18 @@ class PeoplePanel(QWidget):
                 db.merge_persons(source_person_id=person_id, target_person_id=target_id)
                 db.close()
                 self.load_persons()
+
+    def _on_card_delete_requested(self, person_id: int, display_name: str) -> None:
+        reply = QMessageBox.question(
+            self,
+            "Delete Person",
+            f"Are you sure you want to completely delete '{display_name}'?\n\n"
+            "This will remove the person card and unassign all its photos.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            db = Database(self._data_folder / "library.db")
+            db.delete_person(person_id)
+            db.close()
+            self.load_persons()

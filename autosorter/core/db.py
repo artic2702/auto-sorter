@@ -978,6 +978,24 @@ class Database:
 
         self.recompute_person_centroid(target_person_id)
 
+    def delete_person(self, person_id: int) -> None:
+        """
+        Completely delete a person from the database.
+
+        - Unassigns all faces that belonged to this person (sets person_id = NULL).
+        - Deletes the person record from persons table.
+        """
+        self._conn.execute(
+            """
+            UPDATE faces
+            SET person_id = NULL, assign_source = 'auto', assign_conf = 0.0
+            WHERE person_id = ?
+            """,
+            (person_id,),
+        )
+        self._conn.execute("DELETE FROM persons WHERE id = ?", (person_id,))
+        self._conn.commit()
+
     def unassign_face(self, face_id: int) -> Optional[int]:
         """
         Remove a face from its assigned person ("Not this person").

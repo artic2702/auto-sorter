@@ -511,31 +511,46 @@ def clean_up_person_album(
 ) -> Dict[str, int]:
     """
     Re-check all auto-assigned faces in a person's album against all other persons.
-    If any face is significantly closer to another person (by >= min_margin and sim >= min_sim)
-    and does not violate the Co-Occurrence Firewall, it is automatically shifted.
 
-    Safety:
-    - Faces with assign_source == 'user' are NEVER moved.
-    - Zero co-occurrence violations allowed (defense-in-depth).
-    - Centroids and face counts of affected persons are atomically updated.
+    Semi-Supervised Active Learning Rationale:
+    When a user manually shifts a misfiled photo out of Person A into Person B,
+    Person B's centroid immediately adapts to represent that new angle or pose.
+    This function sweeps through Person A's remaining photos and asks:
+    'Are there any other photos here that are now mathematically closer to Person B
+    than to Person A, and free of photo collisions?'
+    If so, it shifts them automatically, saving the user from manually moving 10 photos one by one.
+
+    Safety & Production Invariants:
+    1. Permanent User Locks: Any face with assign_source == 'user' is strictly skipped.
+    2. Co-Occurrence Firewall: A face is never moved to a target person if that target
+       person already appears in that photograph.
+    3. Dual Gating: Requires both high absolute confidence (sim >= min_sim) AND relative
+       superiority over the current person (sim - current_sim >= min_margin).
+    4. Atomic Consistency: Centroids and photo counts of all affected persons are
+       recomputed within a single SQLite transaction.
 
     Returns:
         Dict[str, int]: Mapping of target person display_name -> count of faces shifted.
     """
+    # Fetch all faces currently allotted to this person
     faces = db.get_faces_for_person(person_id)
     if not faces:
         return {}
 
+    # Fetch current person record and its centroid
     current_person = db.get_person_by_id(person_id)
     if not current_person or not current_person["centroid"]:
         return {}
 
+    # Convert stored centroid bytes into an active 128-D unit vector
     c_current = FaceRecognizer.bytes_to_embedding(current_person["centroid"])
-    all_other_persons = [p for p in db.get_all_persons() if p["id"] != person_id and p["centroid"]]
 
+    # Fetch all other candidate persons in the database who have valid centroids
+    all_other_persons = [p for p in db.get_all_persons() if p["id"] != person_id and p["centroid"]]
     if not all_other_persons:
         return {}
 
+    # Pre-cache other person centroids and their existing image ID footprints for O(1) checks
     other_centroids: Dict[int, np.ndarray] = {}
     other_images: Dict[int, Set[int]] = {}
     person_names: Dict[int, str] = {}
@@ -543,49 +558,65 @@ def clean_up_person_album(
     for p in all_other_persons:
         pid = p["id"]
         other_centroids[pid] = FaceRecognizer.bytes_to_embedding(p["centroid"])
+        # Co-occurrence index: track all photo IDs where this candidate person already has a face
         other_images[pid] = {f["image_id"] for f in db.get_faces_for_person(pid)}
         person_names[pid] = p["display_name"]
 
+    # Keep track of moved photos for user-facing summary report
     moved_counts: Dict[str, int] = defaultdict(int)
+    # Track all person IDs that gained or lost faces so their centroids can be recomputed
     affected_pids: Set[int] = {person_id}
 
+    # Execute all updates within an atomic database transaction
     with db._conn:
         for f in faces:
-            # Never move user-locked faces
+            # Rule 1: Never alter user-confirmed face assignments
             if f["assign_source"] == "user" or not f["embedding"]:
                 continue
 
+            # Load the face's 128-D embedding vector
             emb = FaceRecognizer.bytes_to_embedding(f["embedding"])
+
+            # Compute current cosine similarity to the person it is currently sitting in
             s_current = float(emb @ c_current)
 
             best_pid = None
             best_sim = -1.0
 
+            # Test similarity against every other candidate person in the library
             for pid, c_other in other_centroids.items():
-                # Firewall: target person cannot already appear in this photo!
+                # Rule 2: Defense-in-depth Firewall. Two faces in the same photo cannot link!
                 if f["image_id"] in other_images[pid]:
                     continue
 
+                # Cosine similarity dot product
                 sim = float(emb @ c_other)
                 if sim > best_sim:
                     best_sim = sim
                     best_pid = pid
 
+            # Rule 3: Dual-gating check.
+            # Must meet minimum absolute similarity (0.46) AND beat current person by margin (0.03)
             if best_pid is not None and best_sim >= min_sim and (best_sim - s_current) >= min_margin:
+                # Reassign face in SQLite to the better-matching person
                 db.assign_face_to_person(f["id"], best_pid, source="auto", confidence=best_sim)
+                # Update in-memory image footprint so subsequent faces from the same photo cannot follow
                 other_images[best_pid].add(f["image_id"])
+                # Record the shift for the summary dialog
                 moved_counts[person_names[best_pid]] += 1
                 affected_pids.add(best_pid)
 
-        # Update centroids and face counts for all affected persons
+        # Recompute mathematical centroids and face counts for every person that was modified
         for pid in affected_pids:
             p_faces = db.get_faces_for_person(pid)
             if not p_faces:
+                # If an auto-created person lost all its faces and is now empty, delete it
                 p = db.get_person_by_id(pid)
                 if p and p["name_is_user_set"] == 0:
                     db.delete_person(pid)
                 continue
 
+            # Re-average all remaining valid face embeddings
             valid_embs = [FaceRecognizer.bytes_to_embedding(f["embedding"]) for f in p_faces if f["embedding"]]
             if valid_embs:
                 new_c = np.mean(valid_embs, axis=0)
@@ -594,6 +625,7 @@ def clean_up_person_album(
                 new_c_bytes = FaceRecognizer.embedding_to_bytes(new_c)
                 db.update_person_centroid(pid, new_c_bytes, face_count=len(p_faces))
 
+        # Re-pick highest quality cover faces for all cards
         pick_cover_faces(db)
 
     return dict(moved_counts)

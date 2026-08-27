@@ -175,18 +175,46 @@ When viewing a full photograph with multiple people:
 
 ---
 
+### 8. Semi-Supervised Active Learning — "🔍 Re-check Album"
+
+Moving 10 misfiled photos one-by-one is tedious. Auto-Sorter leverages **Semi-Supervised Active Learning** through the **"🔍 Re-check Album"** engine (`clean_up_person_album` in `cluster.py`):
+
+1. When a user manually moves **one photo** of a person to their correct card (e.g. Person 7), that photo becomes a confirmed anchor.
+2. Person 7's centroid shifts to include that new angle/pose.
+3. Clicking **`🔍 Re-check Album`** sweeps all remaining auto-assigned photos in the current album.
+4. For every face:
+   - Evaluates similarity against all other person centroids.
+   - Enforces the **Co-Occurrence Firewall** (cannot move if the target person already appears in that image).
+   - If a face is significantly closer to another person ($\text{sim} \ge 0.46$ and margin $\ge 0.03$), it is **automatically shifted** to that person's card!
+5. All affected centroids and counts are updated atomically in SQLite.
+
+---
+
+### 9. Complete Person Deletion
+
+When an unwanted person card is discovered (e.g. background strangers or erroneous clusters), the user can delete it in 1 click:
+- Available via the red **`🗑️ Delete Person`** button in the album header and the **`🗑️`** icon on each person card.
+- Calls `db.delete_person(person_id)`:
+  ```sql
+  UPDATE faces SET person_id = NULL, assign_source = 'auto', assign_conf = 0.0 WHERE person_id = ?;
+  DELETE FROM persons WHERE id = ?;
+  ```
+- Unassigns all member faces cleanly so they return to the unassigned pool, deletes the card, and reloads the People grid.
+
+---
+
 ## 📋 Files Created / Modified in M5
 
 | File | Status | Purpose |
 |---|---|---|
-| `autosorter/core/db.py` | MODIFIED | Added `merge_persons`, `unassign_face`, `reassign_face`, `create_person_for_face`, and `recompute_person_centroid` |
-| `autosorter/app/people_panel.py` | MODIFIED | Added `MergePersonDialog`, `MoveFaceDialog`, `FaceCellWidget` (120px thumbs + double click + full photo button), responsive `PersonDetailPanel` |
+| `autosorter/core/db.py` | MODIFIED | Added `merge_persons`, `delete_person`, `unassign_face`, `reassign_face`, `create_person_for_face`, and `recompute_person_centroid` |
+| `autosorter/core/cluster.py` | MODIFIED | Added `clean_up_person_album` for active semi-supervised album re-checking |
+| `autosorter/app/people_panel.py` | MODIFIED | Added `MergePersonDialog`, `MoveFaceDialog`, `FaceCellWidget`, `Re-check Album` button, and card/header `Delete Person` actions |
 | `autosorter/app/photo_viewer.py` | MODIFIED | Added interactive face box click popover with assignment actions + reload signals |
 | `autosorter/app/main_window.py` | MODIFIED | Connected `viewer.changed` signals to automatically refresh People Panel on any correction |
-| `tests/test_m5_corrections.py` | NEW | 7 comprehensive unit tests for merge, unassign, reassign, new person creation, and restart persistence |
-| `docs/learning/M5_corrections.md` | NEW | In-depth learning documentation and mathematical concepts |
-| `docs/learning/README.md` | MODIFIED | Updated index to include Milestone 5 |
-| `PLAN.md` | MODIFIED | Updated Decisions Log with Milestone 5 completion |
+| `tests/test_m5_corrections.py` | MODIFIED | 10 comprehensive unit tests including album cleanup and person deletion |
+| `docs/learning/M5_corrections.md` | MODIFIED | In-depth learning documentation for active learning and card deletion |
+
 
 ---
 

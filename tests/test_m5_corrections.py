@@ -298,3 +298,43 @@ class TestCleanUpPersonAlbum:
         assert db.get_face_by_id(f_locked)["person_id"] == p1
         db.close()
 
+
+class TestDeletePerson:
+    """Tests for db.delete_person()."""
+
+    def test_delete_person_removes_person_and_unassigns_faces(self, tmp_path: Path):
+        """Deleting a person removes the person record and unassigns its faces."""
+        db = Database(tmp_path / "test.db")
+        img1 = db.upsert_image("photo1.jpg", 100, 1.0, status="processed")
+        img2 = db.upsert_image("photo2.jpg", 100, 1.0, status="processed")
+
+        p1 = db.insert_person("Person 1", None, 0)
+        f1 = _insert_face(db, img1, quality=0.9, seed=1, person_id=p1)
+        f2 = _insert_face(db, img2, quality=0.8, seed=1, person_id=p1)
+
+        p2 = db.insert_person("Person 2", None, 0)
+        f3 = _insert_face(db, img1, quality=0.7, seed=2, person_id=p2)
+
+        assert db.count_persons() == 2
+        assert len(db.get_faces_for_person(p1)) == 2
+
+        # Delete Person 1
+        db.delete_person(p1)
+
+        # Person 1 is deleted
+        assert db.count_persons() == 1
+        assert db.get_person_by_id(p1) is None
+        assert db.get_person_by_id(p2) is not None
+
+        # Faces f1 and f2 are now unassigned
+        f1_row = db.get_face_by_id(f1)
+        f2_row = db.get_face_by_id(f2)
+        assert f1_row["person_id"] is None
+        assert f2_row["person_id"] is None
+
+        # Person 2's face is untouched
+        f3_row = db.get_face_by_id(f3)
+        assert f3_row["person_id"] == p2
+        db.close()
+
+

@@ -15,6 +15,7 @@ This directory is a living engineering journal documenting the real-world bugs, 
 | **05** | [Moved & Renamed Photo Reattachment via SHA-256](05_moved_file_reattach_sha256.md) | Storage | 🟡 Medium | Moving photos to new folders caused duplicate scanning and lost identity history. Solved using SHA-256 content hashing to reattach paths in-place. |
 | **06** | [False Positive Face Filtering on Text & Posters](06_false_positive_face_filtering.md) | Computer Vision | 🟡 Medium | YuNet occasionally detected text posters as faces. Solved with geometric landmark validation (aspect ratio, eye spacing, triangle area) and stricter person seed thresholds. |
 | **07** | [Orphaned Faces & The Co-Occurrence Constraint](07_orphaned_faces_and_cooccurrence.md) | AI & Database | 🔴 Critical | Faces in group photos showed raw percentages instead of names because their person IDs pointed to deleted records. Solved with orphan cleanup and co-occurrence cannot-link constraints. |
+| **08** | [The Greedy Centroid Trap: Scaling Face Identity with Sparse Constrained Graphs & Active Learning](08_sparse_constrained_graph_clustering.md) | AI & Graph Theory | 🔴 Critical | Greedy single-pass clustering drifted on look-alikes and fractured into 108 cards. Solved with chunked k-NN, two-tier mutual graph, Chinese Whispers, zero-conflict consolidation, and 1-click active learning album re-check. |
 
 ---
 

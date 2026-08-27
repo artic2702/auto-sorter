@@ -9,22 +9,39 @@ After face detection + embedding (M3), automatically **cluster faces into person
 
 ### 1. Clustering — Turning Faces into People
 
-**The problem:** We have 200 face embeddings (128 numbers each). We know faces of the same person have similar embeddings. But we don't know *how many* people there are, or *which* faces belong together.
+**The problem:** We have hundreds or thousands of face embeddings (128 numbers each). We know faces of the same person have similar embeddings. But we don't know *how many* people there are, or *which* faces belong together.
 
-**Clustering** = automatically grouping similar items. There are many algorithms:
+**Clustering** = automatically grouping similar items. There are many approaches:
 
 ```
-K-Means:   "Split into K groups"     → Problem: we don't know K
-DBSCAN:    "Find dense neighborhoods" → Problem: batch-only, hard to resume
-Agglom.:   "Merge closest pairs"      → Problem: O(n²) memory
+K-Means:               "Split into K groups"           → Problem: we don't know K
+DBSCAN:                "Find dense neighborhoods"       → Problem: batch-only, slow O(N²)
+Agglomerative:         "Merge closest pairs"            → Problem: O(N²) memory blows up at 50k faces
+Single-Pass Centroid:  "Greedy running average"         → Problem: drift & look-alike chaining
 
-Incremental Centroid:  "One at a time, compare to known people"
-                       → ✅ Our choice!
+Sparse Constrained     "Chunked top-k + Mutual Graph +  → ✅ OUR PRODUCTION ARCHITECTURE!
+Graph Clustering:       Chinese Whispers + Consolidation"  (Fast, low-end CPU friendly, zero look-alike merges)
 ```
 
 ---
 
-### 2. Incremental Centroid Clustering & Drift Protection
+### 2. The Production Engine: Sparse Constrained Graph Clustering (`graph_cluster.py`)
+
+To scale to 50,000+ photos without GPU requirements or look-alike drift, Auto-Sorter uses a two-tier sparse graph architecture:
+
+1. **Chunked Adaptive k-NN ($O(\text{chunk} \cdot N)$ Memory)**:
+   Computes top-$k$ nearest neighbors in 1,000-face chunks with `argpartition`. Memory stays strictly under 50 MB even on huge libraries.
+2. **Co-Occurrence Firewall**:
+   Two faces in the same photograph can never be the same person. The similarity matrix penalizes same-photo comparisons with $-\infty$, preventing false edges.
+3. **Two-Tier Graph Topology**:
+   - **Strong Mutual-kNN Edges**: Edge between $u$ and $v$ exists *if and only if* $u \in \text{top}(v)$ AND $v \in \text{top}(u)$ with similarity $\ge 0.46$. Cuts unilateral look-alike bridges completely!
+   - **Weak Support Edges**: Directed edges ($\ge 0.42$) saved for peripheral face attachment.
+4. **Constrained Chinese Whispers**:
+   Deterministic label propagation ($O(E)$ time) that converges in $< 5$ iterations without needing a pre-set $K$.
+5. **Zero-Conflict Core Consolidation**:
+   Merges subclusters of the same individual (e.g. clean face vs cake-covered face) if their centroids match ($\ge 0.52$) and they share zero photo collisions.
+6. **Dual-Gated Peripheral Propagation**:
+   Attaches difficult profile/blurred shots requiring both absolute support ($\ge 0.46$) and margin over runner-up ($\ge 0.03$). Ambiguous faces route safely to Unknown.
 
 Process one face at a time, in order of quality (best faces first):
 
