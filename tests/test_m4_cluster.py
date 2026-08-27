@@ -24,6 +24,8 @@ from autosorter.core.cluster import (
     T_REVIEW,
     MARGIN_MIN,
     pick_cover_faces,
+    consolidate_clusters,
+    recluster_all_auto_faces,
 )
 from autosorter.core.db import Database
 from autosorter.core.face_embed import FaceRecognizer
@@ -398,4 +400,79 @@ class TestCoverFace:
 
         person = db.get_person_by_id(pid)
         assert person["cover_face_id"] == f_high  # highest quality
+        db.close()
+
+
+# ──────────────────────────────────────────────────────────
+# Consolidation and re-clustering tests
+# ──────────────────────────────────────────────────────────
+
+class TestConsolidateClusters:
+    """Tests for automatic duplicate cluster consolidation."""
+
+    def test_consolidate_merges_similar_centroids(self, tmp_path: Path):
+        """Persons with very close centroids (>= 0.52) are merged."""
+        db = Database(tmp_path / "test.db")
+        img_id = db.upsert_image("photo.jpg", 100, 1.0, status="processed")
+
+        # Two persons with identical embeddings (cosine sim = 1.0)
+        f1 = _insert_face_with_embedding(db, img_id, quality=0.8, seed=42)
+        f2 = _insert_face_with_embedding(db, img_id, quality=0.8, seed=42)
+
+        pid1 = db.insert_person("Person 1", _emb_bytes(42), face_count=1, cover_face_id=f1)
+        pid2 = db.insert_person("Person 2", _emb_bytes(42), face_count=1, cover_face_id=f2)
+        db.assign_face_to_person(f1, pid1, "auto", 1.0)
+        db.assign_face_to_person(f2, pid2, "auto", 1.0)
+
+        assert db.count_persons() == 2
+
+        merges = consolidate_clusters(db, merge_threshold=0.52)
+        assert merges == 1
+        assert db.count_persons() == 1
+
+        remaining = db.get_all_persons()[0]
+        assert remaining["face_count"] == 2
+        db.close()
+
+    def test_consolidate_respects_different_user_names(self, tmp_path: Path):
+        """User-named persons with different names are never auto-merged."""
+        db = Database(tmp_path / "test.db")
+        img_id = db.upsert_image("photo.jpg", 100, 1.0, status="processed")
+
+        f1 = _insert_face_with_embedding(db, img_id, quality=0.8, seed=42)
+        f2 = _insert_face_with_embedding(db, img_id, quality=0.8, seed=42)
+
+        pid1 = db.insert_person("Arnav", _emb_bytes(42), face_count=1, cover_face_id=f1)
+        pid2 = db.insert_person("Dad", _emb_bytes(42), face_count=1, cover_face_id=f2)
+        db.rename_person(pid1, "Arnav")  # marks name_is_user_set = 1
+        db.rename_person(pid2, "Dad")    # marks name_is_user_set = 1
+
+        db.assign_face_to_person(f1, pid1, "user", 1.0)
+        db.assign_face_to_person(f2, pid2, "user", 1.0)
+
+        merges = consolidate_clusters(db, merge_threshold=0.52)
+        assert merges == 0
+        assert db.count_persons() == 2
+        db.close()
+
+    def test_recluster_all_auto_faces(self, tmp_path: Path):
+        """recluster_all_auto_faces resets auto groups and rebuilds cleanly."""
+        db = Database(tmp_path / "test.db")
+        img_id = db.upsert_image("photo.jpg", 100, 1.0, status="processed")
+
+        # Two faces of the same person, seeded under two different auto-persons
+        f1 = _insert_face_with_embedding(db, img_id, quality=0.8, seed=42)
+        f2 = _insert_face_with_embedding(db, img_id, quality=0.8, seed=42)
+
+        pid1 = db.insert_person("Person 1", _emb_bytes(42), face_count=1, cover_face_id=f1)
+        pid2 = db.insert_person("Person 2", _emb_bytes(42), face_count=1, cover_face_id=f2)
+        db.assign_face_to_person(f1, pid1, "auto", 1.0)
+        db.assign_face_to_person(f2, pid2, "auto", 1.0)
+
+        assert db.count_persons() == 2
+
+        # Re-cluster all auto faces
+        assigned, count = recluster_all_auto_faces(db)
+        assert assigned == 2
+        assert count == 1  # Successfully unified into 1 person!
         db.close()

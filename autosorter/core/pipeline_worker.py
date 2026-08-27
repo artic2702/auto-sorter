@@ -35,7 +35,12 @@ from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal
 
-from autosorter.core.cluster import ClusterEngine, AssignAction, pick_cover_faces
+from autosorter.core.cluster import (
+    ClusterEngine,
+    AssignAction,
+    pick_cover_faces,
+    consolidate_clusters,
+)
 from autosorter.core.db import Database
 from autosorter.core.face_crop import align_face, save_face_thumb
 from autosorter.core.face_detect import FaceDetector
@@ -436,12 +441,15 @@ class PipelineWorker(QThread):
                 f"People: {done}/{total} faces ({engine.person_count} people)"
             )
 
-        # Set cover faces for all persons
+        # Consolidate and merge split clusters to resolve over-splitting
         if not self._cancel:
+            merges = consolidate_clusters(db)
             pick_cover_faces(db)
+            if merges > 0:
+                summary["clusters_merged"] = merges
 
         summary["faces_assigned"] = assigned
-        summary["persons_found"] = engine.person_count
+        summary["persons_found"] = db.count_persons()
 """
 Pipeline Worker module.
 Unified 4-stage background worker for scan→detect→embed→cluster.

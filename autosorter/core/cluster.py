@@ -64,28 +64,38 @@ from autosorter.core.face_embed import FaceRecognizer
 
 
 # ══════════════════════════════════════════════════════════════════
-# Thresholds — the key knobs that control clustering behavior
+# Thresholds — calibrated for balanced clustering without over-splitting
 # ══════════════════════════════════════════════════════════════════
 
-# Above this score: AUTO-ASSIGN to the best-matching person.
-# Balanced threshold that groups same-person faces across varied lighting/angles.
-T_HIGH = 0.46
+# Above this score: candidate for AUTO-ASSIGN to the best-matching person.
+T_HIGH = 0.44
 
-# Minimum Member Similarity:
-# Prevents centroid drift while allowing natural variation in facial expressions.
-T_MIN_MEMBER = 0.40
+# Strong match threshold: when similarity to centroid is this high,
+# margin check between competing candidates is relaxed because competing
+# candidates are often split clusters of the same identity.
+T_STRONG = 0.48
 
-# Review threshold for M5 review queue
+# Top-K member validation threshold:
+# Checks average similarity to the top 5 most similar confirmed faces of the person.
+# Prevents centroid drift while allowing natural variation in expressions, angles, and lighting.
+TOP_K_MEMBERS = 5
+T_TOP_K = 0.40
+
+# Review threshold for uncertain matches
 T_REVIEW = 0.36
 
-# Best match must beat second-best by at least this much.
-MARGIN_MIN = 0.03
+# Best match must beat second-best by at least this margin when in borderline range (T_HIGH <= score < T_STRONG).
+MARGIN_MIN = 0.02
+
+# Centroid cosine similarity threshold for merging split clusters in the consolidation pass.
+T_MERGE_CENTROIDS = 0.52
 
 # Faces below this quality threshold are skipped for clustering.
 MIN_QUALITY_FOR_CLUSTERING = 0.25
 
 # Minimum quality required to SEED a brand-new Person card.
-MIN_QUALITY_TO_SEED_PERSON = 0.35
+# Higher threshold ensures new cards start with crisp, frontal, representative anchors.
+MIN_QUALITY_TO_SEED_PERSON = 0.38
 
 
 class AssignAction(Enum):
@@ -214,26 +224,37 @@ class ClusterEngine:
         second_score = float(similarities[sorted_indices[1]]) if len(sorted_indices) > 1 else -1.0
         margin = best_score - second_score
 
-        # Complete-linkage check against all members of the best candidate
-        member_sims = [float(m @ embedding) for m in self._person_members[best_person_id]]
-        min_member_sim = min(member_sims)
-        avg_member_sim = float(np.mean(member_sims))
+        # Top-K member validation against the best candidate
+        members = self._person_members.get(best_person_id, [])
+        if members:
+            member_sims = sorted([float(m @ embedding) for m in members], reverse=True)
+            top_k = member_sims[:TOP_K_MEMBERS]
+            top_avg = float(np.mean(top_k))
+        else:
+            top_avg = best_score
 
-        # Assign only if average similarity and minimum member similarity are both strong
-        if avg_member_sim >= T_HIGH and min_member_sim >= T_MIN_MEMBER and margin >= MARGIN_MIN:
+        # Assignment conditions:
+        # 1. Overwhelming match: best_score >= T_STRONG (0.48) and top_avg >= T_TOP_K (0.40).
+        #    Margin check is relaxed because competing candidates with high scores are
+        #    usually split duplicate clusters of the exact same identity.
+        # 2. Good match: best_score >= T_HIGH (0.44) and top_avg >= T_TOP_K and margin >= MARGIN_MIN (0.02).
+        is_strong_match = (best_score >= T_STRONG and top_avg >= T_TOP_K)
+        is_good_match = (best_score >= T_HIGH and top_avg >= T_TOP_K and margin >= MARGIN_MIN)
+
+        if is_strong_match or is_good_match:
             self._assign_to_person(
-                db, face_id, best_person_id, embedding, quality, avg_member_sim,
+                db, face_id, best_person_id, embedding, quality, best_score,
                 source="auto",
             )
             return AssignResult(
                 face_id=face_id,
                 person_id=best_person_id,
                 action=AssignAction.AUTO_ASSIGN,
-                confidence=avg_member_sim,
+                confidence=best_score,
             )
 
         else:
-            # Not a match to any existing person
+            # Not a confident match to any existing person
             if quality < MIN_QUALITY_TO_SEED_PERSON:
                 return AssignResult(
                     face_id=face_id,
@@ -334,4 +355,132 @@ def pick_cover_faces(db: Database) -> None:
             # faces are ordered by quality DESC, so first = best
             best_face = faces[0]
             db.update_person_cover(person["id"], best_face["id"])
+
+
+def consolidate_clusters(db: Database, merge_threshold: float = T_MERGE_CENTROIDS) -> int:
+    """
+    Find and merge person clusters whose centroids have cosine similarity >= merge_threshold.
+
+    This resolves over-splitting where the same person was fragmented into multiple
+    separate cards due to streaming order or variations across photos (e.g. with/without glasses).
+
+    Safety rules:
+    - Never merge two persons if BOTH have different user-set names (e.g. 'Arnav' and 'Dad').
+    - If one person is user-named and the other is auto-named, merge into the user-named person.
+    - If both are auto-named, merge into the person with more photos.
+
+    Returns:
+        Total number of merges performed.
+    """
+    merges_done = 0
+
+    while True:
+        persons = db.get_all_persons()
+        if len(persons) < 2:
+            break
+
+        # Collect valid centroids
+        p_data = []
+        centroids = []
+        for p in persons:
+            if p["centroid"] is not None:
+                c = FaceRecognizer.bytes_to_embedding(p["centroid"])
+                centroids.append(c)
+                p_data.append(p)
+
+        if len(centroids) < 2:
+            break
+
+        mat = np.stack(centroids)
+        sim_mat = mat @ mat.T
+
+        # Find the single most similar pair >= merge_threshold
+        best_sim = merge_threshold - 1e-5
+        best_pair = None
+
+        for i in range(len(p_data)):
+            for j in range(i + 1, len(p_data)):
+                p1, p2 = p_data[i], p_data[j]
+
+                # Safety: do not merge two different user-named persons
+                if (
+                    p1["name_is_user_set"] == 1
+                    and p2["name_is_user_set"] == 1
+                    and p1["display_name"] != p2["display_name"]
+                ):
+                    continue
+
+                sim = float(sim_mat[i, j])
+                if sim >= merge_threshold and sim > best_sim:
+                    best_sim = sim
+                    best_pair = (p1, p2)
+
+        if best_pair is None:
+            # No more pairs exceed the merge threshold
+            break
+
+        p1, p2 = best_pair
+
+        # Determine target vs source
+        if p1["name_is_user_set"] == 1 and p2["name_is_user_set"] == 0:
+            target_id, source_id = p1["id"], p2["id"]
+        elif p2["name_is_user_set"] == 1 and p1["name_is_user_set"] == 0:
+            target_id, source_id = p2["id"], p1["id"]
+        else:
+            if p1["face_count"] >= p2["face_count"]:
+                target_id, source_id = p1["id"], p2["id"]
+            else:
+                target_id, source_id = p2["id"], p1["id"]
+
+        db.merge_persons(source_id, target_id)
+        merges_done += 1
+
+    if merges_done > 0:
+        pick_cover_faces(db)
+
+    return merges_done
+
+
+def recluster_all_auto_faces(db: Database) -> Tuple[int, int]:
+    """
+    Reset automated face assignments and re-cluster from scratch using the
+    improved ClusterEngine and post-consolidation pass.
+
+    Safety:
+    - User-set assignments ('user') and user-named persons are preserved.
+    - Only auto-created persons and auto-assigned faces are reset.
+
+    Returns:
+        (total_faces_assigned, total_persons_remaining)
+    """
+    # 1. Unassign only auto-assigned faces
+    db._conn.execute(
+        "UPDATE faces SET person_id = NULL WHERE assign_source != 'user' OR assign_source IS NULL"
+    )
+    # 2. Delete empty or auto-created persons (keep user-named)
+    db._conn.execute("DELETE FROM persons WHERE name_is_user_set = 0")
+    db._conn.commit()
+
+    # 3. For any remaining user-named persons, recompute their centroid from remaining user faces
+    for p in db.get_all_persons():
+        db.recompute_person_centroid(p["id"])
+
+    # 4. Initialize engine and load existing user-named persons
+    engine = ClusterEngine()
+    engine.load_existing_persons(db)
+
+    total_assigned = 0
+    for face_row in db.iter_unassigned_faces():
+        result = engine.process_face(db, face_row)
+        if result.action != AssignAction.SKIPPED:
+            total_assigned += 1
+
+    # 5. Run consolidation pass
+    consolidate_clusters(db)
+
+    # 6. Re-pick cover photos
+    pick_cover_faces(db)
+
+    return total_assigned, db.count_persons()
+
 

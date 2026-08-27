@@ -31,6 +31,12 @@ py -V:3.12 -m venv .venv
 .\.venv\Scripts\python -m pytest        # run tests
 ```
 
+## Documentation
+
+- [Project Roadmap & Plan](PLAN.md)
+- [Learning Guides (Milestones 0–6)](docs/learning/README.md)
+- [Challenges We Faced & Solutions](docs/challenges_we_faced/README.md)
+
 ## License
 
 TBD.

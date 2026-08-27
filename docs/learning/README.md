@@ -14,3 +14,9 @@ Read them in order — each one builds on the previous.
 | [M6_resume_incremental.md](M6_resume_incremental.md) | M6 — Resume & Incremental | Unified pipeline, crash-safe resume, SHA-256 reattach, upsert fix |
 
 *More guides will be added as we complete each milestone!*
+
+---
+
+### 🛠️ Real-World Engineering Challenges
+Check out [Challenges We Faced](../challenges_we_faced/README.md) for in-depth post-mortems on the toughest bugs and algorithmic traps solved in this project.
+
