@@ -437,6 +437,14 @@ class PersonDetailPanel(QWidget):
         merge_btn.clicked.connect(self._on_merge_clicked)
         header.addWidget(merge_btn)
 
+        recheck_btn = QPushButton("🔍 Re-check Album")
+        recheck_btn.setToolTip("Scan this album for misplaced photos and automatically shift them to their rightful owners")
+        recheck_btn.setStyleSheet(
+            "background-color: #1565C0; color: white; padding: 6px 14px; border-radius: 4px; font-weight: bold; font-size: 13px;"
+        )
+        recheck_btn.clicked.connect(self._on_recheck_clicked)
+        header.addWidget(recheck_btn)
+
         layout.addLayout(header)
 
         # Subtitle hint
@@ -597,6 +605,29 @@ class PersonDetailPanel(QWidget):
                 db.close()
                 self.changed.emit()
                 self.close()
+
+    def _on_recheck_clicked(self) -> None:
+        """Scan this album for misplaced faces and shift them to better matching persons."""
+        from autosorter.core.cluster import clean_up_person_album
+        db = Database(self._data_folder / "library.db")
+        try:
+            summary = clean_up_person_album(db, self._person["id"])
+        finally:
+            db.close()
+
+        if not summary:
+            QMessageBox.information(
+                self,
+                "Album Verified",
+                f"All photos in {self._person['display_name']} are correctly placed!\nNo misfiled photos were found.",
+            )
+            return
+
+        lines = [f"• Shifted {count} photo(s) to <b>{name}</b>" for name, count in summary.items()]
+        msg = f"<b>Re-check complete!</b><br><br>" + "<br>".join(lines)
+        QMessageBox.information(self, "Re-Check Complete", msg)
+        self._reload_data()
+
 
 
 class PersonCard(QWidget):

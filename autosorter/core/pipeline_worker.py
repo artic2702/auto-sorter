@@ -428,37 +428,14 @@ class PipelineWorker(QThread):
             return
 
         self.stage_changed.emit("Identifying people", 4, self.TOTAL_STAGES)
+        self.progress.emit(0, total, f"Clustering {total} faces...")
 
-        engine = ClusterEngine()
-        engine.load_existing_persons(db)
+        from autosorter.core.graph_cluster import run_graph_clustering, GraphClusterConfig
+        report = run_graph_clustering(db, config=GraphClusterConfig(), dry_run=False)
 
-        done = 0
-        assigned = 0
-
-        for face_row in db.iter_unassigned_faces():
-            if self._cancel:
-                break
-
-            result = engine.process_face(db, face_row)
-
-            if result.action != AssignAction.SKIPPED:
-                assigned += 1
-
-            done += 1
-            self.progress.emit(
-                done, total,
-                f"People: {done}/{total} faces ({engine.person_count} people)"
-            )
-
-        # Consolidate and merge split clusters to resolve over-splitting
-        if not self._cancel:
-            merges = consolidate_clusters(db)
-            pick_cover_faces(db)
-            if merges > 0:
-                summary["clusters_merged"] = merges
-
-        summary["faces_assigned"] = assigned
+        summary["faces_assigned"] = report.total_faces - report.unknown_count
         summary["persons_found"] = db.count_persons()
+        self.progress.emit(total, total, f"People: {summary['persons_found']} people found")
 """
 Pipeline Worker module.
 Unified 4-stage background worker for scan→detect→embed→cluster.

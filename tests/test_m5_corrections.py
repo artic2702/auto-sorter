@@ -230,3 +230,71 @@ class TestCorrectionsPersistence:
         assert p1_row["face_count"] == 2
         assert db2.get_person_by_id(p2) is None
         db2.close()
+
+
+class TestCleanUpPersonAlbum:
+    """Tests for clean_up_person_album()."""
+
+    def test_cleanup_shifts_misplaced_face(self, tmp_path: Path):
+        """A face placed in Person 1 that is much closer to Person 2 is shifted."""
+        from autosorter.core.cluster import clean_up_person_album
+        db = Database(tmp_path / "test.db")
+        img1 = db.upsert_image("photo1.jpg", 100, 1.0, status="processed")
+        img2 = db.upsert_image("photo2.jpg", 100, 1.0, status="processed")
+        img3 = db.upsert_image("photo3.jpg", 100, 1.0, status="processed")
+
+        # Person 1 anchor (seed 1)
+        p1 = db.insert_person("Person 1", None, 0)
+        f1 = _insert_face(db, img1, quality=0.9, seed=1, person_id=p1)
+        db.recompute_person_centroid(p1)
+
+        # Person 2 anchor (seed 2)
+        p2 = db.insert_person("Person 2", None, 0)
+        f2 = _insert_face(db, img2, quality=0.9, seed=2, person_id=p2)
+        db.recompute_person_centroid(p2)
+
+        # Misplaced face: has seed 2 (matches Person 2), but was auto-assigned to Person 1 in img3
+        f_misplaced = _insert_face(db, img3, quality=0.85, seed=2, person_id=p1)
+        db.recompute_person_centroid(p1)
+
+        assert len(db.get_faces_for_person(p1)) == 2
+        assert len(db.get_faces_for_person(p2)) == 1
+
+        # Run cleanup on Person 1
+        summary = clean_up_person_album(db, p1)
+
+        assert "Person 2" in summary
+        assert summary["Person 2"] == 1
+
+        # Misplaced face should now be in Person 2
+        f_check = db.get_face_by_id(f_misplaced)
+        assert f_check["person_id"] == p2
+        assert len(db.get_faces_for_person(p1)) == 1
+        assert len(db.get_faces_for_person(p2)) == 2
+        db.close()
+
+    def test_cleanup_preserves_user_locked_face(self, tmp_path: Path):
+        """Faces with assign_source = 'user' are never moved by cleanup."""
+        from autosorter.core.cluster import clean_up_person_album
+        db = Database(tmp_path / "test.db")
+        img1 = db.upsert_image("photo1.jpg", 100, 1.0, status="processed")
+        img2 = db.upsert_image("photo2.jpg", 100, 1.0, status="processed")
+        img3 = db.upsert_image("photo3.jpg", 100, 1.0, status="processed")
+
+        p1 = db.insert_person("Person 1", None, 0)
+        f1 = _insert_face(db, img1, quality=0.9, seed=1, person_id=p1)
+        db.recompute_person_centroid(p1)
+
+        p2 = db.insert_person("Person 2", None, 0)
+        f2 = _insert_face(db, img2, quality=0.9, seed=2, person_id=p2)
+        db.recompute_person_centroid(p2)
+
+        # User locked face into Person 1
+        f_locked = _insert_face(db, img3, quality=0.85, seed=2, person_id=p1)
+        db.assign_face_to_person(f_locked, p1, source="user")
+
+        summary = clean_up_person_album(db, p1)
+        assert summary == {}
+        assert db.get_face_by_id(f_locked)["person_id"] == p1
+        db.close()
+

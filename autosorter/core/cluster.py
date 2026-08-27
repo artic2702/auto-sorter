@@ -53,6 +53,7 @@ Example:
   (Later, user can merge if it's actually Arnav.)
 """
 
+from collections import defaultdict
 from dataclasses import dataclass
 from enum import Enum
 from typing import Dict, List, Optional, Set, Tuple
@@ -486,54 +487,115 @@ def consolidate_clusters(db: Database, merge_threshold: float = T_MERGE_CENTROID
 def recluster_all_auto_faces(db: Database) -> Tuple[int, int]:
     """
     Reset automated face assignments and re-cluster from scratch using the
-    improved ClusterEngine with co-occurrence cannot-link constraints.
+    Sparse Constrained Graph Identity Clustering engine.
 
     Safety:
     - User-named persons are preserved.
-    - Any face pointing to a non-existent/deleted person is cleaned up.
+    - User-assigned faces ('user') are locked.
+    - Full transaction with pre-commit validation.
 
     Returns:
         (total_faces_assigned, total_persons_remaining)
     """
-    # 1. Unassign all faces that do not belong to surviving user-named persons
-    surviving_user_pids = [
-        row["id"] for row in db._conn.execute(
-            "SELECT id FROM persons WHERE name_is_user_set = 1"
-        ).fetchall()
-    ]
-    if surviving_user_pids:
-        placeholders = ",".join("?" * len(surviving_user_pids))
-        db._conn.execute(
-            f"UPDATE faces SET person_id = NULL WHERE person_id NOT IN ({placeholders})",
-            surviving_user_pids,
-        )
-    else:
-        db._conn.execute("UPDATE faces SET person_id = NULL")
-
-    # 2. Delete auto-created persons
-    db._conn.execute("DELETE FROM persons WHERE name_is_user_set = 0")
-    db._conn.commit()
-
-    # 3. For any remaining user-named persons, recompute centroid
-    for pid in surviving_user_pids:
-        db.recompute_person_centroid(pid)
-
-    # 4. Re-cluster all unassigned faces
-    engine = ClusterEngine()
-    engine.load_existing_persons(db)
-
-    total_assigned = 0
-    for face_row in db.iter_unassigned_faces():
-        result = engine.process_face(db, face_row)
-        if result.action != AssignAction.SKIPPED:
-            total_assigned += 1
-
-    # 5. Run consolidation pass
-    consolidate_clusters(db)
-
-    # 6. Re-pick cover photos
-    pick_cover_faces(db)
-
+    from autosorter.core.graph_cluster import run_graph_clustering, GraphClusterConfig
+    report = run_graph_clustering(db, config=GraphClusterConfig(), dry_run=False)
+    total_assigned = report.total_faces - report.unknown_count
     return total_assigned, db.count_persons()
+
+
+def clean_up_person_album(
+    db: Database,
+    person_id: int,
+    min_sim: float = 0.46,
+    min_margin: float = 0.03,
+) -> Dict[str, int]:
+    """
+    Re-check all auto-assigned faces in a person's album against all other persons.
+    If any face is significantly closer to another person (by >= min_margin and sim >= min_sim)
+    and does not violate the Co-Occurrence Firewall, it is automatically shifted.
+
+    Safety:
+    - Faces with assign_source == 'user' are NEVER moved.
+    - Zero co-occurrence violations allowed (defense-in-depth).
+    - Centroids and face counts of affected persons are atomically updated.
+
+    Returns:
+        Dict[str, int]: Mapping of target person display_name -> count of faces shifted.
+    """
+    faces = db.get_faces_for_person(person_id)
+    if not faces:
+        return {}
+
+    current_person = db.get_person_by_id(person_id)
+    if not current_person or not current_person["centroid"]:
+        return {}
+
+    c_current = FaceRecognizer.bytes_to_embedding(current_person["centroid"])
+    all_other_persons = [p for p in db.get_all_persons() if p["id"] != person_id and p["centroid"]]
+
+    if not all_other_persons:
+        return {}
+
+    other_centroids: Dict[int, np.ndarray] = {}
+    other_images: Dict[int, Set[int]] = {}
+    person_names: Dict[int, str] = {}
+
+    for p in all_other_persons:
+        pid = p["id"]
+        other_centroids[pid] = FaceRecognizer.bytes_to_embedding(p["centroid"])
+        other_images[pid] = {f["image_id"] for f in db.get_faces_for_person(pid)}
+        person_names[pid] = p["display_name"]
+
+    moved_counts: Dict[str, int] = defaultdict(int)
+    affected_pids: Set[int] = {person_id}
+
+    with db._conn:
+        for f in faces:
+            # Never move user-locked faces
+            if f["assign_source"] == "user" or not f["embedding"]:
+                continue
+
+            emb = FaceRecognizer.bytes_to_embedding(f["embedding"])
+            s_current = float(emb @ c_current)
+
+            best_pid = None
+            best_sim = -1.0
+
+            for pid, c_other in other_centroids.items():
+                # Firewall: target person cannot already appear in this photo!
+                if f["image_id"] in other_images[pid]:
+                    continue
+
+                sim = float(emb @ c_other)
+                if sim > best_sim:
+                    best_sim = sim
+                    best_pid = pid
+
+            if best_pid is not None and best_sim >= min_sim and (best_sim - s_current) >= min_margin:
+                db.assign_face_to_person(f["id"], best_pid, source="auto", confidence=best_sim)
+                other_images[best_pid].add(f["image_id"])
+                moved_counts[person_names[best_pid]] += 1
+                affected_pids.add(best_pid)
+
+        # Update centroids and face counts for all affected persons
+        for pid in affected_pids:
+            p_faces = db.get_faces_for_person(pid)
+            if not p_faces:
+                p = db.get_person_by_id(pid)
+                if p and p["name_is_user_set"] == 0:
+                    db.delete_person(pid)
+                continue
+
+            valid_embs = [FaceRecognizer.bytes_to_embedding(f["embedding"]) for f in p_faces if f["embedding"]]
+            if valid_embs:
+                new_c = np.mean(valid_embs, axis=0)
+                norm = np.linalg.norm(new_c)
+                new_c /= (norm if norm > 1e-9 else 1.0)
+                new_c_bytes = FaceRecognizer.embedding_to_bytes(new_c)
+                db.update_person_centroid(pid, new_c_bytes, face_count=len(p_faces))
+
+        pick_cover_faces(db)
+
+    return dict(moved_counts)
 
 

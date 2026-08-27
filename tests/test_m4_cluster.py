@@ -458,11 +458,12 @@ class TestConsolidateClusters:
     def test_recluster_all_auto_faces(self, tmp_path: Path):
         """recluster_all_auto_faces resets auto groups and rebuilds cleanly."""
         db = Database(tmp_path / "test.db")
-        img_id = db.upsert_image("photo.jpg", 100, 1.0, status="processed")
+        img_id1 = db.upsert_image("photo1.jpg", 100, 1.0, status="processed")
+        img_id2 = db.upsert_image("photo2.jpg", 100, 1.0, status="processed")
 
-        # Two faces of the same person, seeded under two different auto-persons
-        f1 = _insert_face_with_embedding(db, img_id, quality=0.8, seed=42)
-        f2 = _insert_face_with_embedding(db, img_id, quality=0.8, seed=42)
+        # Two faces of the same person across two different photos, seeded under two different auto-persons
+        f1 = _insert_face_with_embedding(db, img_id1, quality=0.8, seed=42)
+        f2 = _insert_face_with_embedding(db, img_id2, quality=0.8, seed=42)
 
         pid1 = db.insert_person("Person 1", _emb_bytes(42), face_count=1, cover_face_id=f1)
         pid2 = db.insert_person("Person 2", _emb_bytes(42), face_count=1, cover_face_id=f2)
