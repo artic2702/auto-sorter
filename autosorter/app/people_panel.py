@@ -39,7 +39,6 @@ from PySide6.QtWidgets import (
 )
 
 from autosorter.core.db import Database
-from autosorter.core.cluster import consolidate_clusters, recluster_all_auto_faces
 
 
 # Size of face thumbnails on person cards
@@ -779,52 +778,12 @@ class PeoplePanel(QWidget):
         header_row.addWidget(self._title_label)
         header_row.addStretch()
 
-        auto_merge_btn = QPushButton("✨ Auto-Merge Duplicates")
-        auto_merge_btn.setToolTip("Automatically combine person cards that have highly similar faces (>=52% match)")
-        auto_merge_btn.setStyleSheet(
-            "background-color: #2E7D32; color: white; padding: 4px 12px; border-radius: 4px; font-weight: bold; font-size: 12px;"
-        )
-        auto_merge_btn.clicked.connect(self._on_auto_merge_clicked)
-        header_row.addWidget(auto_merge_btn)
-
-        recluster_btn = QPushButton("🔄 Re-Cluster Library")
-        recluster_btn.setToolTip("Re-run clustering on all faces using the improved, non-fragmenting algorithm")
-        recluster_btn.setStyleSheet(
-            "background-color: #1565C0; color: white; padding: 4px 12px; border-radius: 4px; font-size: 12px;"
-        )
-        recluster_btn.clicked.connect(self._on_recluster_clicked)
-        header_row.addWidget(recluster_btn)
-
-        refresh_btn = QPushButton("Refresh")
+        refresh_btn = QPushButton("🔄 Refresh")
         refresh_btn.setFixedHeight(28)
+        refresh_btn.clicked.connect(self.load_persons)
+        header_row.addWidget(refresh_btn)
+
         layout.addLayout(header_row)
-
-        # Filter buttons: Main People vs All People
-        filter_row = QHBoxLayout()
-        filter_row.setSpacing(8)
-
-        self._filter_main_btn = QPushButton("⭐ Main People (3+ photos)")
-        self._filter_main_btn.setCheckable(True)
-        self._filter_main_btn.setChecked(False)
-        self._filter_main_btn.setStyleSheet("""
-            QPushButton { background-color: #2b2b2b; color: #aaa; border: 1px solid #444; border-radius: 12px; padding: 4px 14px; font-size: 12px; }
-            QPushButton:checked { background-color: #1b5e20; color: #81c784; border: 1px solid #4caf50; font-weight: bold; }
-        """)
-        self._filter_main_btn.clicked.connect(self._on_filter_main_clicked)
-        filter_row.addWidget(self._filter_main_btn)
-
-        self._filter_all_btn = QPushButton("All People")
-        self._filter_all_btn.setCheckable(True)
-        self._filter_all_btn.setChecked(True)
-        self._filter_all_btn.setStyleSheet("""
-            QPushButton { background-color: #2b2b2b; color: #aaa; border: 1px solid #444; border-radius: 12px; padding: 4px 14px; font-size: 12px; }
-            QPushButton:checked { background-color: #0d47a1; color: #64b5f6; border: 1px solid #2196f3; font-weight: bold; }
-        """)
-        self._filter_all_btn.clicked.connect(self._on_filter_all_clicked)
-        filter_row.addWidget(self._filter_all_btn)
-
-        filter_row.addStretch()
-        layout.addLayout(filter_row)
 
         # Scrollable card grid
         self._scroll = QScrollArea()
@@ -863,18 +822,10 @@ class PeoplePanel(QWidget):
             self._title_label.setText("<b style='font-size: 16px;'>👤 People</b>")
             return
 
-        total_found = len(persons)
-        if hasattr(self, "_filter_main_btn") and self._filter_main_btn.isChecked():
-            persons = [p for p in persons if p["face_count"] >= 3 or p["name_is_user_set"] == 1]
-            self._title_label.setText(
-                f"<b style='font-size: 16px;'>👤 People</b>"
-                f"  <span style='color: gray;'>({len(persons)} main people shown · {total_found} total)</span>"
-            )
-        else:
-            self._title_label.setText(
-                f"<b style='font-size: 16px;'>👤 People</b>"
-                f"  <span style='color: gray;'>({total_found} people found)</span>"
-            )
+        self._title_label.setText(
+            f"<b style='font-size: 16px;'>👤 People</b>"
+            f"  <span style='color: gray;'>({len(persons)} people found)</span>"
+        )
 
         cols = max(1, (self.width() - 40) // 185)
         for i, person in enumerate(persons):
@@ -923,57 +874,3 @@ class PeoplePanel(QWidget):
                 db.merge_persons(source_person_id=person_id, target_person_id=target_id)
                 db.close()
                 self.load_persons()
-
-    def _on_auto_merge_clicked(self) -> None:
-        db_path = self._data_folder / "library.db"
-        if not db_path.is_file():
-            return
-        db = Database(db_path)
-        merges = consolidate_clusters(db)
-        db.close()
-        self.load_persons()
-        if merges > 0:
-            QMessageBox.information(
-                self,
-                "Auto-Merge Complete",
-                f"Successfully consolidated {merges} duplicate person cards!",
-            )
-        else:
-            QMessageBox.information(
-                self,
-                "Auto-Merge Complete",
-                "No duplicate person cards found to merge.",
-            )
-
-    def _on_recluster_clicked(self) -> None:
-        reply = QMessageBox.question(
-            self,
-            "Re-Cluster Library",
-            "This will reset all auto-created person groups and re-cluster all photos using the improved algorithm.\n\n"
-            "Any names you manually gave to persons will be preserved.\n\n"
-            "Do you want to continue?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        )
-        if reply == QMessageBox.StandardButton.Yes:
-            db_path = self._data_folder / "library.db"
-            if not db_path.is_file():
-                return
-            db = Database(db_path)
-            assigned, count = recluster_all_auto_faces(db)
-            db.close()
-            self.load_persons()
-            QMessageBox.information(
-                self,
-                "Re-Clustering Complete",
-                f"Finished! Clustered {assigned} faces into {count} people.",
-            )
-
-    def _on_filter_main_clicked(self) -> None:
-        self._filter_main_btn.setChecked(True)
-        self._filter_all_btn.setChecked(False)
-        self.load_persons()
-
-    def _on_filter_all_clicked(self) -> None:
-        self._filter_all_btn.setChecked(True)
-        self._filter_main_btn.setChecked(False)
-        self.load_persons()

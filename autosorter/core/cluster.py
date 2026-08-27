@@ -140,6 +140,10 @@ class ClusterEngine:
         # Map of person_id → list of all member embeddings (for complete linkage check)
         self._person_members: Dict[int, List[np.ndarray]] = {}
 
+        # Map of person_id → set of image_ids (for co-occurrence cannot-link constraint:
+        # a person cannot appear more than once in the same image)
+        self._person_image_ids: Dict[int, Set[int]] = {}
+
     @property
     def person_count(self) -> int:
         """Number of persons currently tracked."""
@@ -147,7 +151,7 @@ class ClusterEngine:
 
     def load_existing_persons(self, db: Database) -> None:
         """
-        Load all existing persons' centroids and member embeddings from the database.
+        Load all existing persons' centroids, member embeddings, and image_ids from the database.
         """
         persons = db.get_all_persons()
 
@@ -164,7 +168,7 @@ class ClusterEngine:
             self._person_ids.append(pid)
             self._face_counts[pid] = person["face_count"]
 
-            # Load member embeddings
+            # Load member embeddings and image_ids
             faces = db.get_faces_for_person(pid)
             members = [
                 FaceRecognizer.bytes_to_embedding(f["embedding"])
@@ -172,6 +176,7 @@ class ClusterEngine:
                 if f["embedding"] is not None
             ]
             self._person_members[pid] = members if members else [centroid]
+            self._person_image_ids[pid] = {f["image_id"] for f in faces}
 
             centroids.append(centroid)
 
@@ -187,6 +192,7 @@ class ClusterEngine:
         Process a single unassigned face: assign to existing person or create new.
         """
         face_id = face_row["id"]
+        image_id = face_row["image_id"] if "image_id" in face_row.keys() else 0
         quality = face_row["quality"] or 0.0
 
         # Quality gate: skip low-quality faces
@@ -203,7 +209,7 @@ class ClusterEngine:
 
         # If no persons exist yet, create the first one
         if self._centroids is None or len(self._person_ids) == 0:
-            person_id = self._create_new_person(db, face_id, embedding)
+            person_id = self._create_new_person(db, face_id, embedding, image_id=image_id)
             return AssignResult(
                 face_id=face_id,
                 person_id=person_id,
@@ -214,14 +220,33 @@ class ClusterEngine:
         # Compute similarity to ALL persons at once (matrix multiplication)
         similarities = self._centroids @ embedding
 
-        # Find the best and second-best matches
+        # Filter candidates by co-occurrence constraint:
+        # If image_id is already present in this person's photos, only allow if
+        # similarity is near-identical (> 0.65, e.g. mirror reflection, panorama, or identical embeddings).
+        # For standard inter-person similarities (< 0.65), a person cannot appear twice in the same photo.
         sorted_indices = np.argsort(similarities)[::-1]
-        best_idx = sorted_indices[0]
+        valid_indices = []
+        for i in sorted_indices:
+            pid = self._person_ids[i]
+            score = float(similarities[i])
+            if image_id and image_id in self._person_image_ids.get(pid, set()):
+                if score < 0.65:
+                    continue
+            valid_indices.append(i)
+
+        if not valid_indices:
+            # All existing persons already have a face in this image
+            if quality < MIN_QUALITY_TO_SEED_PERSON:
+                return AssignResult(face_id=face_id, person_id=0, action=AssignAction.SKIPPED, confidence=0.0)
+            person_id = self._create_new_person(db, face_id, embedding, image_id=image_id)
+            return AssignResult(face_id=face_id, person_id=person_id, action=AssignAction.NEW_PERSON, confidence=0.0)
+
+        # Best and second-best among valid candidates
+        best_idx = valid_indices[0]
         best_score = float(similarities[best_idx])
         best_person_id = self._person_ids[best_idx]
 
-        # Second-best score (for margin check)
-        second_score = float(similarities[sorted_indices[1]]) if len(sorted_indices) > 1 else -1.0
+        second_score = float(similarities[valid_indices[1]]) if len(valid_indices) > 1 else -1.0
         margin = best_score - second_score
 
         # Top-K member validation against the best candidate
@@ -234,17 +259,15 @@ class ClusterEngine:
             top_avg = best_score
 
         # Assignment conditions:
-        # 1. Overwhelming match: best_score >= T_STRONG (0.48) and top_avg >= T_TOP_K (0.40).
-        #    Margin check is relaxed because competing candidates with high scores are
-        #    usually split duplicate clusters of the exact same identity.
-        # 2. Good match: best_score >= T_HIGH (0.44) and top_avg >= T_TOP_K and margin >= MARGIN_MIN (0.02).
+        # 1. Overwhelming match: best_score >= T_STRONG and top_avg >= T_TOP_K.
+        # 2. Good match: best_score >= T_HIGH and top_avg >= T_TOP_K and margin >= MARGIN_MIN.
         is_strong_match = (best_score >= T_STRONG and top_avg >= T_TOP_K)
         is_good_match = (best_score >= T_HIGH and top_avg >= T_TOP_K and margin >= MARGIN_MIN)
 
         if is_strong_match or is_good_match:
             self._assign_to_person(
                 db, face_id, best_person_id, embedding, quality, best_score,
-                source="auto",
+                source="auto", image_id=image_id,
             )
             return AssignResult(
                 face_id=face_id,
@@ -263,7 +286,7 @@ class ClusterEngine:
                     confidence=best_score,
                 )
 
-            person_id = self._create_new_person(db, face_id, embedding)
+            person_id = self._create_new_person(db, face_id, embedding, image_id=image_id)
             return AssignResult(
                 face_id=face_id,
                 person_id=person_id,
@@ -276,6 +299,7 @@ class ClusterEngine:
         db: Database,
         face_id: int,
         embedding: np.ndarray,
+        image_id: int = 0,
     ) -> int:
         """
         Create a new person seeded with this face.
@@ -298,6 +322,7 @@ class ClusterEngine:
         self._person_ids.append(person_id)
         self._face_counts[person_id] = 1
         self._person_members[person_id] = [embedding]
+        self._person_image_ids[person_id] = {image_id} if image_id else set()
 
         if self._centroids is None:
             self._centroids = embedding.reshape(1, -1)
@@ -315,6 +340,7 @@ class ClusterEngine:
         quality: float,
         score: float,
         source: str,
+        image_id: int = 0,
     ) -> None:
         """
         Assign a face to an existing person and update the centroid.
@@ -337,6 +363,8 @@ class ClusterEngine:
         self._centroids[idx] = new_centroid
         self._face_counts[person_id] = new_count
         self._person_members[person_id].append(embedding)
+        if image_id:
+            self._person_image_ids[person_id].add(image_id)
 
         centroid_bytes = FaceRecognizer.embedding_to_bytes(new_centroid)
         db.update_person_centroid(person_id, centroid_bytes, new_count)
@@ -394,7 +422,14 @@ def consolidate_clusters(db: Database, merge_threshold: float = T_MERGE_CENTROID
         mat = np.stack(centroids)
         sim_mat = mat @ mat.T
 
-        # Find the single most similar pair >= merge_threshold
+        # Collect member image_ids for each person to enforce co-occurrence cannot-link:
+        # if two persons appear in the SAME photo, they CANNOT be merged!
+        person_image_map = {
+            p["id"]: {f["image_id"] for f in db.get_faces_for_person(p["id"])}
+            for p in p_data
+        }
+
+        # Find the single most similar pair >= merge_threshold that does NOT violate co-occurrence
         best_sim = merge_threshold - 1e-5
         best_pair = None
 
@@ -411,6 +446,13 @@ def consolidate_clusters(db: Database, merge_threshold: float = T_MERGE_CENTROID
                     continue
 
                 sim = float(sim_mat[i, j])
+
+                # Co-occurrence cannot-link: cannot merge if both persons appear in the same image
+                # unless similarity is near-identical (> 0.65, e.g. mirror reflection / identical embeddings)
+                if person_image_map.get(p1["id"], set()) & person_image_map.get(p2["id"], set()):
+                    if sim < 0.65:
+                        continue
+
                 if sim >= merge_threshold and sim > best_sim:
                     best_sim = sim
                     best_pair = (p1, p2)
@@ -444,28 +486,39 @@ def consolidate_clusters(db: Database, merge_threshold: float = T_MERGE_CENTROID
 def recluster_all_auto_faces(db: Database) -> Tuple[int, int]:
     """
     Reset automated face assignments and re-cluster from scratch using the
-    improved ClusterEngine and post-consolidation pass.
+    improved ClusterEngine with co-occurrence cannot-link constraints.
 
     Safety:
-    - User-set assignments ('user') and user-named persons are preserved.
-    - Only auto-created persons and auto-assigned faces are reset.
+    - User-named persons are preserved.
+    - Any face pointing to a non-existent/deleted person is cleaned up.
 
     Returns:
         (total_faces_assigned, total_persons_remaining)
     """
-    # 1. Unassign only auto-assigned faces
-    db._conn.execute(
-        "UPDATE faces SET person_id = NULL WHERE assign_source != 'user' OR assign_source IS NULL"
-    )
-    # 2. Delete empty or auto-created persons (keep user-named)
+    # 1. Unassign all faces that do not belong to surviving user-named persons
+    surviving_user_pids = [
+        row["id"] for row in db._conn.execute(
+            "SELECT id FROM persons WHERE name_is_user_set = 1"
+        ).fetchall()
+    ]
+    if surviving_user_pids:
+        placeholders = ",".join("?" * len(surviving_user_pids))
+        db._conn.execute(
+            f"UPDATE faces SET person_id = NULL WHERE person_id NOT IN ({placeholders})",
+            surviving_user_pids,
+        )
+    else:
+        db._conn.execute("UPDATE faces SET person_id = NULL")
+
+    # 2. Delete auto-created persons
     db._conn.execute("DELETE FROM persons WHERE name_is_user_set = 0")
     db._conn.commit()
 
-    # 3. For any remaining user-named persons, recompute their centroid from remaining user faces
-    for p in db.get_all_persons():
-        db.recompute_person_centroid(p["id"])
+    # 3. For any remaining user-named persons, recompute centroid
+    for pid in surviving_user_pids:
+        db.recompute_person_centroid(pid)
 
-    # 4. Initialize engine and load existing user-named persons
+    # 4. Re-cluster all unassigned faces
     engine = ClusterEngine()
     engine.load_existing_persons(db)
 

@@ -412,6 +412,15 @@ class PipelineWorker(QThread):
         Stage 4: Run incremental centroid clustering on all faces that
         have embeddings but no person assignment yet.
         """
+        # Clean up any orphaned face references (pointing to non-existent persons)
+        db._conn.execute("""
+            UPDATE faces
+            SET person_id = NULL
+            WHERE person_id IS NOT NULL
+              AND person_id NOT IN (SELECT id FROM persons)
+        """)
+        db._conn.commit()
+
         total = db.count_unassigned_faces()
         if total == 0:
             # Nothing to cluster — just report existing state
