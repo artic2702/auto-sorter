@@ -179,12 +179,14 @@ class AlbumDetailView(QDialog):
         """
         super().__init__(parent)
         self.setWindowTitle(title)
-        self.resize(700, 500)
+        self.resize(720, 520)
         self.setMinimumSize(400, 300)
 
         self._data_folder = data_folder
         self._items = items
         self._is_face_album = is_face_album
+        self._current_cols = -1
+        self._viewers: list = []
 
         self._build_ui()
 
@@ -198,43 +200,67 @@ class AlbumDetailView(QDialog):
         header.setStyleSheet("font-size: 15px; font-weight: bold;")
         layout.addWidget(header)
 
+        # Helper hint
+        hint = QLabel("<span style='color: #888; font-size: 11px;'>💡 Click any photo to view in full resolution</span>")
+        layout.addWidget(hint)
+
         # Scrollable grid of thumbnails
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
-        grid_container = QWidget()
-        self._grid_layout = QGridLayout(grid_container)
-        self._grid_layout.setSpacing(6)
-        scroll.setWidget(grid_container)
+        self._grid_container = QWidget()
+        self._grid_layout = QGridLayout(self._grid_container)
+        self._grid_layout.setSpacing(8)
+        self._grid_layout.setContentsMargins(4, 4, 4, 4)
+        scroll.setWidget(self._grid_container)
         layout.addWidget(scroll, stretch=1)
 
-        # Populate the grid
+        # Populate initial grid
         self._populate_grid()
 
     def _populate_grid(self) -> None:
-        """Fill the grid with clickable thumbnail widgets."""
+        """
+        Fill the grid with clickable thumbnail widgets.
+
+        Avoids ghost/overlapping widget artifacts by:
+        1. Checking if column count actually changed before rebuilding.
+        2. Hiding and unparenting previous widgets immediately before deleteLater.
+        """
         # Calculate columns based on dialog width
-        cols = max(1, (self.width() - 60) // (DETAIL_THUMB_SIZE + 6))
+        cols = max(1, (self.width() - 50) // (DETAIL_THUMB_SIZE + 8))
+
+        # Only rebuild if column count changed or grid is empty
+        if cols == self._current_cols and self._grid_layout.count() > 0:
+            return
+        self._current_cols = cols
+
+        # Immediately hide and unparent previous widgets to prevent visual ghosts
+        while self._grid_layout.count():
+            item = self._grid_layout.takeAt(0)
+            w = item.widget()
+            if w:
+                w.hide()
+                w.setParent(None)
+                w.deleteLater()
 
         for i, item in enumerate(self._items):
             row = i // cols
             col = i % cols
 
-            # Create a thumbnail label
+            # Create a clickable thumbnail label
             thumb_label = QLabel()
             thumb_label.setFixedSize(DETAIL_THUMB_SIZE, DETAIL_THUMB_SIZE)
             thumb_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            thumb_label.setCursor(Qt.CursorShape.PointingHandCursor)
             thumb_label.setStyleSheet(
-                "border: 2px solid transparent; border-radius: 4px;"
+                "border: 1px solid #ccc; border-radius: 6px; background: #111;"
             )
 
             # Load the appropriate thumbnail
             if self._is_face_album:
-                # For unknown faces, show the face thumbnail
                 thumb_path = item["thumb_path"] if item["thumb_path"] else None
             else:
-                # For image albums, show the image thumbnail
                 thumb_path = item["thumb_path"] if item["thumb_path"] else None
 
             if thumb_path:
@@ -251,16 +277,34 @@ class AlbumDetailView(QDialog):
             else:
                 thumb_label.setText("❌")
 
+            # Click thumbnail to open full photo in PhotoViewer
+            image_path = item.get("path") if not self._is_face_album else item.get("image_path")
+            image_id = item.get("id") if not self._is_face_album else item.get("image_id")
+            if image_path and image_id:
+                thumb_label.mousePressEvent = lambda ev, ip=image_path, iid=image_id: (
+                    self._open_photo_viewer(ip, iid) if ev.button() == Qt.MouseButton.LeftButton else None
+                )
+
             self._grid_layout.addWidget(thumb_label, row, col)
+
+    def _open_photo_viewer(self, image_path: str, image_id: int) -> None:
+        """Open the full photo in PhotoViewer when clicked."""
+        try:
+            db_path = self._data_folder / "library.db"
+            db = Database(db_path)
+            faces = db.get_faces_for_image(image_id)
+            db.close()
+
+            from autosorter.app.photo_viewer import PhotoViewer
+            viewer = PhotoViewer(image_path, faces, data_folder=self._data_folder)
+            viewer.show()
+            self._viewers.append(viewer)
+        except Exception:
+            pass
 
     def resizeEvent(self, event):
         """Reflow the grid when the dialog is resized."""
         super().resizeEvent(event)
-        # Clear and repopulate with new column count
-        while self._grid_layout.count():
-            item = self._grid_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
         self._populate_grid()
 
 
