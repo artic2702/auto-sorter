@@ -445,6 +445,14 @@ class PersonDetailPanel(QWidget):
         recheck_btn.clicked.connect(self._on_recheck_clicked)
         header.addWidget(recheck_btn)
 
+        export_btn = QPushButton("📤 Export Person")
+        export_btn.setToolTip("Export only this person's photos into an organized folder")
+        export_btn.setStyleSheet(
+            "background-color: #E65100; color: white; padding: 6px 14px; border-radius: 4px; font-weight: bold; font-size: 13px;"
+        )
+        export_btn.clicked.connect(self._on_export_person_clicked)
+        header.addWidget(export_btn)
+
         delete_btn = QPushButton("🗑️ Delete Person")
         delete_btn.setToolTip("Completely delete this person card and unassign its photos")
         delete_btn.setStyleSheet(
@@ -652,6 +660,56 @@ class PersonDetailPanel(QWidget):
             db.close()
             self.changed.emit()
             self.close()
+
+    def _on_export_person_clicked(self) -> None:
+        """
+        Export only this person's photos to a user-selected directory.
+
+        Workflow:
+        1. Prompts user to pick a target directory on their computer via QFileDialog.
+        2. Calls export_library with person_ids=[self._person['id']], creating
+           a dedicated subfolder (e.g. D:\\Export\\Arnav\\...).
+        3. Copies all photos containing this person, applying collision resolution
+           and skipping any files that were already exported in previous runs.
+        4. Shows a friendly summary dialog with photo counts.
+        """
+        from PySide6.QtWidgets import QFileDialog
+        from autosorter.core.export import export_library
+
+        name = self._person["display_name"]
+        folder = QFileDialog.getExistingDirectory(
+            self, f"Select Export Destination for {name}"
+        )
+        if not folder:
+            return
+
+        dest_root = Path(folder)
+        db_path = self._data_folder / "library.db"
+
+        try:
+            db = Database(db_path)
+            result = export_library(
+                db=db,
+                export_root=dest_root,
+                person_ids=[self._person["id"]],
+                include_group=False,
+                include_unknown=False,
+                include_docs=False,
+            )
+            db.close()
+
+            copied = result["files_copied"]
+            skipped = result["files_skipped"]
+            summary_text = f"Successfully exported {copied} photos of '{name}' to:\n{dest_root}"
+            if skipped > 0:
+                summary_text += f"\n\n({skipped} photos already existed and were skipped)"
+
+            QMessageBox.information(self, "📤 Export Complete", summary_text)
+        except Exception as e:
+            QMessageBox.critical(
+                self, "Export Error", f"Failed to export photos of '{name}':\n\n{e}"
+            )
+
 
 
 

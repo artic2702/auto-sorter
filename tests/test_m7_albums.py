@@ -431,3 +431,50 @@ class TestExportEngine:
         # Both the original and the _2 version should exist
         assert (arnav_folder / "group_photo.jpg").is_file()
         assert (arnav_folder / "group_photo_2.jpg").is_file()
+
+    def test_export_only_selected_person(self, tmp_db, tmp_path):
+        """Export with person_ids=[p1_id] should only export Arnav and not Mom."""
+        db, db_path, p1_id, p2_id = tmp_db
+        export_dir = tmp_path / "export_single_person"
+
+        (db_path / "group_photo.jpg").write_bytes(b"fake_group")
+        (db_path / "solo_photo.jpg").write_bytes(b"fake_solo")
+
+        result = export_library(
+            db=db,
+            export_root=export_dir,
+            person_ids=[p1_id],  # Only Arnav
+            include_group=False,
+            include_unknown=False,
+            include_docs=False,
+        )
+
+        assert result["persons_exported"] == 1
+        # Arnav folder must exist
+        assert (export_dir / "Arnav").is_dir()
+        assert (export_dir / "Arnav" / "group_photo.jpg").is_file()
+        assert (export_dir / "Arnav" / "solo_photo.jpg").is_file()
+        # Mom folder must NOT exist
+        assert not (export_dir / "Mom").exists()
+
+    def test_export_multiple_selected_persons(self, tmp_db, tmp_path):
+        """Export with specific person_ids should export only those people."""
+        db, db_path, p1_id, p2_id = tmp_db
+        export_dir = tmp_path / "export_two_persons"
+
+        (db_path / "group_photo.jpg").write_bytes(b"fake_group")
+        (db_path / "solo_photo.jpg").write_bytes(b"fake_solo")
+
+        result = export_library(
+            db=db,
+            export_root=export_dir,
+            person_ids=[p1_id, p2_id],
+            include_group=False,
+            include_unknown=False,
+            include_docs=False,
+        )
+
+        assert result["persons_exported"] == 2
+        assert (export_dir / "Arnav").is_dir()
+        assert (export_dir / "Mom").is_dir()
+

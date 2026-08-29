@@ -117,7 +117,7 @@ The Export feature copies files to a user-selected external directory. It follow
 # Run the M7 test suite (31 tests)
 .\.venv\Scripts\python -m pytest tests/test_m7_albums.py -v
 
-# Run the complete project test suite (170 tests)
+# Run the complete project test suite (172 tests)
 .\.venv\Scripts\python -m pytest tests/ -v
 
 # Launch the app
@@ -132,8 +132,14 @@ The Export feature copies files to a user-selected external directory. It follow
      - **❓ Unknown Faces** card with unassigned face count.
      - **📄 Text & Docs** card with detected document count.
    - Click any card $\rightarrow$ an **Album Detail View** modal pops up with a clean scrollable grid of thumbnails.
-2. **Safe Export**:
+2. **Library Export (All or Selected People)**:
    - Click **`📤 Export Library`** in the Albums panel.
-   - Select export options (Group Photos, Unknown, Text & Docs) and choose an export target folder.
+   - Select either **"Export all people"** or **"Export selected people only"** with the interactive checklist.
+   - Select optional smart albums (Group Photos, Unknown, Text & Docs) and choose an export target folder.
    - Watch the real-time progress bar.
    - Verify the destination folder contains organized subfolders per person, group photos copied to each participant, and all source photos are 100% untouched!
+3. **Single-Person Export (1-Click)**:
+   - Open any person card by clicking on it.
+   - Click the orange **`📤 Export Person`** button in the header toolbar.
+   - Pick an export folder $\rightarrow$ exports only that person's photos directly into a named folder!
+

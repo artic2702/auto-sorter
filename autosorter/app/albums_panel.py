@@ -31,16 +31,20 @@ from typing import Optional
 from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QCheckBox,
     QDialog,
     QFileDialog,
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QListWidget,
+    QListWidgetItem,
     QMenu,
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QRadioButton,
     QScrollArea,
     QVBoxLayout,
     QWidget,
@@ -268,19 +272,26 @@ class ExportOptionsDialog(QDialog):
     """
     Dialog for configuring export options before starting.
 
-    Lets the user choose which categories to include in the export
-    and select the destination folder.
+    Lets the user choose:
+    1. Which people to export:
+       - 'All people' (default): exports everyone found in the library
+       - 'Selected people only': checkable list of specific people to export
+    2. Which smart albums to include (Group Photos, Unknown, Docs)
+    3. Destination folder on disk
     """
 
-    def __init__(self, parent=None):
+    def __init__(self, data_folder: Optional[Path] = None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("📤 Export Library")
-        self.setMinimumWidth(400)
+        self.setMinimumWidth(460)
+
+        self._data_folder = data_folder
+        self._persons: list = []
 
         layout = QVBoxLayout(self)
-        layout.setSpacing(12)
+        layout.setSpacing(10)
 
-        # Description
+        # User-facing explanation
         desc = QLabel(
             "Export your photo library into organized person folders.\n"
             "Source photos are NEVER modified — only copies are created."
@@ -289,7 +300,67 @@ class ExportOptionsDialog(QDialog):
         desc.setStyleSheet("font-size: 13px; color: #555;")
         layout.addWidget(desc)
 
-        # Checkboxes for export categories
+        # ── Section 1: People selection (All vs Specific People) ──
+        people_header = QLabel("<b>People to Export:</b>")
+        people_header.setStyleSheet("font-size: 13px; color: #222; margin-top: 4px;")
+        layout.addWidget(people_header)
+
+        # Radio button choices
+        self._rb_all_people = QRadioButton("Export all people")
+        self._rb_all_people.setChecked(True)
+        self._rb_selected_people = QRadioButton("Export selected people only")
+
+        self._people_btn_group = QButtonGroup(self)
+        self._people_btn_group.addButton(self._rb_all_people)
+        self._people_btn_group.addButton(self._rb_selected_people)
+
+        layout.addWidget(self._rb_all_people)
+        layout.addWidget(self._rb_selected_people)
+
+        # Container for the checkable person list (shown only when "Selected" radio is active)
+        self._people_list_container = QWidget()
+        list_layout = QVBoxLayout(self._people_list_container)
+        list_layout.setContentsMargins(18, 2, 0, 4)
+        list_layout.setSpacing(4)
+
+        # Quick action buttons: Select All / Deselect All
+        sel_row = QHBoxLayout()
+        select_all_btn = QPushButton("Select All")
+        select_all_btn.setFixedHeight(24)
+        select_all_btn.setStyleSheet("font-size: 11px; padding: 2px 8px;")
+        select_all_btn.clicked.connect(self._select_all_people)
+        sel_row.addWidget(select_all_btn)
+
+        deselect_all_btn = QPushButton("Deselect All")
+        deselect_all_btn.setFixedHeight(24)
+        deselect_all_btn.setStyleSheet("font-size: 11px; padding: 2px 8px;")
+        deselect_all_btn.clicked.connect(self._deselect_all_people)
+        sel_row.addWidget(deselect_all_btn)
+        sel_row.addStretch()
+        list_layout.addLayout(sel_row)
+
+        # Scrollable list with checkboxes for each person
+        self._people_list = QListWidget()
+        self._people_list.setMaximumHeight(140)
+        self._people_list.itemChanged.connect(lambda _: self._update_ok_button())
+        list_layout.addWidget(self._people_list)
+        layout.addWidget(self._people_list_container)
+
+        # Hidden by default because "All people" is pre-selected
+        self._people_list_container.setVisible(False)
+
+        # Connect radio toggles to show/hide the person checklist
+        self._rb_all_people.toggled.connect(self._on_people_toggle)
+        self._rb_selected_people.toggled.connect(self._on_people_toggle)
+
+        # Load persons from database into the checklist
+        self._load_persons()
+
+        # ── Section 2: Smart Albums Checkboxes ──
+        albums_header = QLabel("<b>Smart Albums to Include:</b>")
+        albums_header.setStyleSheet("font-size: 13px; color: #222; margin-top: 4px;")
+        layout.addWidget(albums_header)
+
         self.cb_group = QCheckBox("Include Group Photos folder")
         self.cb_group.setChecked(True)
         layout.addWidget(self.cb_group)
@@ -302,7 +373,7 @@ class ExportOptionsDialog(QDialog):
         self.cb_docs.setChecked(True)
         layout.addWidget(self.cb_docs)
 
-        # Destination folder selection
+        # ── Section 3: Destination Folder Selection ──
         dest_row = QHBoxLayout()
         dest_row.addWidget(QLabel("Export to:"))
         self._dest_label = QLabel("(not selected)")
@@ -314,20 +385,99 @@ class ExportOptionsDialog(QDialog):
         dest_row.addWidget(browse_btn)
         layout.addLayout(dest_row)
 
-        # OK / Cancel buttons
+        # ── Action Buttons: OK (Export) / Cancel ──
         btn_row = QHBoxLayout()
         btn_row.addStretch()
         self._ok_btn = QPushButton("📤 Export")
         self._ok_btn.setEnabled(False)
-        self._ok_btn.clicked.connect(self.accept)
+        self._ok_btn.clicked.connect(self._on_ok_clicked)
         btn_row.addWidget(self._ok_btn)
         cancel_btn = QPushButton("Cancel")
         cancel_btn.clicked.connect(self.reject)
         btn_row.addWidget(cancel_btn)
         layout.addLayout(btn_row)
 
-        # Store the selected destination path
+        # Selected destination folder
         self.export_path: Optional[Path] = None
+
+    def _load_persons(self) -> None:
+        """Load all visible persons from SQLite and populate the checklist."""
+        if self._data_folder is None:
+            return
+
+        db_path = self._data_folder / "library.db"
+        if not db_path.is_file():
+            return
+
+        try:
+            db = Database(db_path)
+            self._persons = db.get_all_persons()
+            db.close()
+        except Exception:
+            return
+
+        # Update radio label with the total count of persons discovered
+        self._rb_all_people.setText(f"Export all people ({len(self._persons)} people)")
+
+        # Fill the checklist with person display names and photo counts
+        self._people_list.clear()
+        for p in self._persons:
+            count = p["face_count"]
+            item = QListWidgetItem(f"{p['display_name']} ({count} {'photos' if count != 1 else 'photo'})")
+            # Store the person database ID in custom user role
+            item.setData(Qt.ItemDataRole.UserRole, p["id"])
+            item.setCheckState(Qt.CheckState.Checked)
+            self._people_list.addItem(item)
+
+    def _on_people_toggle(self) -> None:
+        """Show checklist when 'Selected only' is active; hide when 'All' is active."""
+        is_selected = self._rb_selected_people.isChecked()
+        self._people_list_container.setVisible(is_selected)
+        self._update_ok_button()
+
+    def _select_all_people(self) -> None:
+        """Check all people in the list."""
+        for i in range(self._people_list.count()):
+            self._people_list.item(i).setCheckState(Qt.CheckState.Checked)
+        self._update_ok_button()
+
+    def _deselect_all_people(self) -> None:
+        """Uncheck all people in the list."""
+        for i in range(self._people_list.count()):
+            self._people_list.item(i).setCheckState(Qt.CheckState.Unchecked)
+        self._update_ok_button()
+
+    def selected_person_ids(self) -> Optional[list]:
+        """
+        Return the list of selected person IDs.
+
+        Returns:
+            None: if 'Export all people' is selected (meaning export everybody).
+            list[int]: if 'Export selected only' is selected (only the checked IDs).
+        """
+        if self._rb_all_people.isChecked():
+            return None
+
+        # Gather IDs of all checked items
+        selected_ids = []
+        for i in range(self._people_list.count()):
+            item = self._people_list.item(i)
+            if item.checkState() == Qt.CheckState.Checked:
+                selected_ids.append(item.data(Qt.ItemDataRole.UserRole))
+        return selected_ids
+
+    def _update_ok_button(self) -> None:
+        """Enable Export button only if a destination is picked and people are selected."""
+        has_dest = self.export_path is not None
+        if self._rb_selected_people.isChecked():
+            # In selective mode, make sure at least one person is checked
+            has_people = any(
+                self._people_list.item(i).checkState() == Qt.CheckState.Checked
+                for i in range(self._people_list.count())
+            )
+            self._ok_btn.setEnabled(has_dest and has_people)
+        else:
+            self._ok_btn.setEnabled(has_dest)
 
     def _pick_dest(self) -> None:
         """Open a folder picker for the export destination."""
@@ -338,7 +488,16 @@ class ExportOptionsDialog(QDialog):
             self.export_path = Path(folder)
             self._dest_label.setText(folder)
             self._dest_label.setStyleSheet("")
-            self._ok_btn.setEnabled(True)
+            self._update_ok_button()
+
+    def _on_ok_clicked(self) -> None:
+        """Validate selections before closing dialog."""
+        if self._rb_selected_people.isChecked():
+            chosen = self.selected_person_ids()
+            if not chosen:
+                QMessageBox.warning(self, "No People Selected", "Please check at least one person to export.")
+                return
+        self.accept()
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -502,8 +661,8 @@ class AlbumsPanel(QWidget):
         """
         Handle Export button click — show options dialog and start export.
         """
-        # Show export options dialog
-        dialog = ExportOptionsDialog(self)
+        # Show export options dialog configured with current data folder
+        dialog = ExportOptionsDialog(data_folder=self._data_folder, parent=self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
 
@@ -518,10 +677,11 @@ class AlbumsPanel(QWidget):
         self._export_label.setVisible(True)
         self._export_label.setText("Starting export…")
 
-        # Create and start the export worker thread
+        # Create and start the export worker thread with selective person filter
         self._export_worker = ExportWorker(
             data_folder=self._data_folder,
             export_root=dialog.export_path,
+            person_ids=dialog.selected_person_ids(),
             include_group=dialog.cb_group.isChecked(),
             include_unknown=dialog.cb_unknown.isChecked(),
             include_docs=dialog.cb_docs.isChecked(),

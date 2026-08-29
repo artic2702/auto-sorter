@@ -44,6 +44,7 @@ class ExportWorker(QThread):
         self,
         data_folder: Path,
         export_root: Path,
+        person_ids: Optional[list] = None,
         include_group: bool = True,
         include_unknown: bool = True,
         include_docs: bool = True,
@@ -53,6 +54,8 @@ class ExportWorker(QThread):
         # Store export configuration — these are read by the run() method
         self._data_folder = data_folder
         self._export_root = export_root
+        # Selective person export filter: None = all people, list = specific person IDs
+        self._person_ids = person_ids
         self._include_group = include_group
         self._include_unknown = include_unknown
         self._include_docs = include_docs
@@ -80,6 +83,7 @@ class ExportWorker(QThread):
             result = export_library(
                 db=db,
                 export_root=self._export_root,
+                person_ids=self._person_ids,
                 include_group=self._include_group,
                 include_unknown=self._include_unknown,
                 include_docs=self._include_docs,

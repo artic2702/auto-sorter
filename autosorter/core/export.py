@@ -102,6 +102,7 @@ def _unique_dest_path(dest_folder: Path, filename: str) -> Path:
 def export_library(
     db: Database,
     export_root: Path,
+    person_ids: Optional[List[int]] = None,
     include_group: bool = True,
     include_unknown: bool = True,
     include_docs: bool = True,
@@ -111,7 +112,7 @@ def export_library(
     """
     Export the photo library into organized person folders.
 
-    This is the main export function. It reads all persons from the database,
+    This is the core export function. It reads persons from the database,
     creates a folder for each person, and copies their photos into the
     corresponding folders. Group photos are copied into each participant's
     folder so every person's folder is complete.
@@ -119,6 +120,10 @@ def export_library(
     Args:
         db:                The database connection.
         export_root:       The root folder to export into (e.g., D:\\Export).
+        person_ids:        Optional list of specific person database IDs to export.
+                           If None, ALL visible persons in the library are exported.
+                           If specified (e.g. [5] or [1, 7]), ONLY those chosen
+                           persons' folders will be created and exported.
         include_group:     If True, also create a "Group Photos" folder.
         include_unknown:   If True, export photos with unknown faces.
         include_docs:      If True, export screenshots/documents.
@@ -142,21 +147,31 @@ def export_library(
         "doc_photos": 0,
     }
 
-    # Ensure the export root directory exists
+    # Ensure the export root directory exists on disk
     export_root.mkdir(parents=True, exist_ok=True)
 
-    # ── Phase 1: Count total work for progress reporting ──
-    persons = db.get_all_persons()
+    # ── Phase 1: Filter target persons and count total work for progress reporting ──
+    all_persons = db.get_all_persons()
+
+    # If the user specified specific person IDs, filter the list down to only those people
+    if person_ids is not None:
+        target_ids = set(person_ids)
+        persons = [p for p in all_persons if p["id"] in target_ids]
+    else:
+        # Otherwise export all visible, non-merged persons
+        persons = all_persons
+
     total_work = 0
 
-    # Pre-fetch image lists per person to count total files
+    # Pre-fetch image lists per person to count total files for the progress bar
     person_images: Dict[int, list] = {}
     for p in persons:
+        # Query all images that contain at least one face of this person
         imgs = db.get_images_for_person(p["id"])
         person_images[p["id"]] = imgs
         total_work += len(imgs)
 
-    # Add counts for optional albums
+    # Add counts for optional smart albums
     group_images = db.get_group_photos() if include_group else []
     unknown_faces = db.get_unknown_faces() if include_unknown else []
     doc_images = db.get_text_and_docs() if include_docs else []
@@ -164,13 +179,13 @@ def export_library(
 
     done = 0
 
-    # ── Phase 2: Export each person's photos ──
+    # ── Phase 2: Export each target person's photos ──
     for p in persons:
-        # Check for cancellation between persons
+        # Check for user cancellation between persons
         if cancel_check and cancel_check():
             break
 
-        # Create a safe folder name from the person's display name
+        # Create a safe, sanitized folder name on Windows (no forbidden chars like \ / : * ? " < > |)
         folder_name = _safe_folder_name(p["display_name"])
         person_folder = export_root / folder_name
         person_folder.mkdir(parents=True, exist_ok=True)
