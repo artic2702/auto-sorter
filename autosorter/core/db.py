@@ -1232,6 +1232,129 @@ class Database:
         }
 
     # ------------------------------------------------------------------
+    # Album queries (M7)
+    # ------------------------------------------------------------------
+
+    def get_group_photos(self) -> list:
+        """
+        Return all images that contain faces from 2 or more distinct persons.
+
+        A "group photo" is any image where at least 2 different people were
+        identified. This powers the "👥 Group Photos" virtual album in M7.
+
+        We count DISTINCT person_id values per image (ignoring NULL = unknown
+        faces). Only images with 2+ distinct persons qualify.
+
+        Returns:
+            List of image rows, ordered by taken_at descending (newest first),
+            falling back to id descending if taken_at is NULL.
+        """
+        cursor = self._conn.execute(
+            """
+            SELECT i.*
+            FROM images i
+            WHERE i.status = 'processed'
+              AND i.id IN (
+                  SELECT f.image_id
+                  FROM faces f
+                  WHERE f.person_id IS NOT NULL
+                  GROUP BY f.image_id
+                  HAVING COUNT(DISTINCT f.person_id) >= 2
+              )
+            ORDER BY COALESCE(i.taken_at, '') DESC, i.id DESC
+            """
+        )
+        return cursor.fetchall()
+
+    def get_unknown_faces(self) -> list:
+        """
+        Return all faces that have embeddings but no person assignment.
+
+        These are faces the clustering engine could not confidently assign
+        to any existing person. They appear in the "❓ Unknown Faces" album
+        so the user can manually assign or dismiss them.
+
+        Returns:
+            List of face rows with valid embeddings and person_id IS NULL,
+            ordered by quality descending (best faces first for easier review).
+        """
+        cursor = self._conn.execute(
+            """
+            SELECT f.*, i.path AS image_path, i.thumb_path AS image_thumb
+            FROM faces f
+            JOIN images i ON f.image_id = i.id
+            WHERE f.embedding IS NOT NULL
+              AND f.person_id IS NULL
+              AND f.det_score > 0
+              AND i.status = 'processed'
+            ORDER BY f.quality DESC
+            """
+        )
+        return cursor.fetchall()
+
+    def get_images_for_person(self, person_id: int) -> list:
+        """
+        Return all images that contain at least one face assigned to this person.
+
+        This is used by the export engine to know which photos to copy into
+        a person's export folder.
+
+        Returns:
+            List of distinct image rows containing this person's faces,
+            ordered by taken_at descending.
+        """
+        cursor = self._conn.execute(
+            """
+            SELECT DISTINCT i.*
+            FROM images i
+            JOIN faces f ON f.image_id = i.id
+            WHERE f.person_id = ?
+              AND i.status = 'processed'
+            ORDER BY COALESCE(i.taken_at, '') DESC, i.id DESC
+            """,
+            (person_id,),
+        )
+        return cursor.fetchall()
+
+    def get_text_and_docs(self) -> list:
+        """
+        Return all images classified as screenshots or documents.
+
+        Uses the doc_score column (populated by the document classifier in M7).
+        A doc_score >= 0.5 indicates the image is likely a screenshot, receipt,
+        or text document rather than a photograph.
+
+        Returns:
+            List of image rows with high doc_score, ordered by score desc.
+        """
+        cursor = self._conn.execute(
+            """
+            SELECT * FROM images
+            WHERE status = 'processed'
+              AND doc_score >= 0.5
+            ORDER BY doc_score DESC, id DESC
+            """
+        )
+        return cursor.fetchall()
+
+    def update_doc_score(self, image_id: int, score: float) -> None:
+        """
+        Set the document/screenshot classification score for an image.
+
+        Called by the document classifier during pipeline Stage 1.
+        Score range: 0.0 (definitely a photo) to 1.0 (definitely a document).
+
+        Args:
+            image_id: The image's database ID.
+            score:    The doc_score value (0.0 to 1.0).
+        """
+        self._conn.execute(
+            "UPDATE images SET doc_score = ? WHERE id = ?",
+            (score, image_id),
+        )
+        self._conn.commit()
+
+    # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
 

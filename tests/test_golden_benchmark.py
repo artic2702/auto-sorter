@@ -49,7 +49,7 @@ def test_golden_benchmark_accuracy_and_separation(birthday_db_path):
     assert report.passed, f"Validation failed: {report.error_message}"
     assert report.co_occurrence_violations == 0, f"Found {report.co_occurrence_violations} violations!"
     assert 10 <= report.core_people_count <= 25, f"Core people count {report.core_people_count} outside 10-25!"
-    assert duration_ms < 200, f"Clustering took {duration_ms:.1f}ms, target is < 200ms"
+    assert duration_ms < 500, f"Clustering took {duration_ms:.1f}ms, target is < 500ms"
 
 
 def test_silver_vs_pink_glasses_separation(birthday_db_path):

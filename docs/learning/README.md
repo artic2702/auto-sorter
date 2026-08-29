@@ -12,6 +12,7 @@ Read them in order — each one builds on the previous.
 | [M4_people_discovery.md](M4_people_discovery.md) | M4 — People Discovery | Incremental clustering, centroids, drift protection, rename |
 | [M5_corrections.md](M5_corrections.md) | M5 — Corrections | 1-click merge, not-this-person, reassign, box-click assign |
 | [M6_resume_incremental.md](M6_resume_incremental.md) | M6 — Resume & Incremental | Unified pipeline, crash-safe resume, SHA-256 reattach, upsert fix |
+| [M7_albums_and_export.md](M7_albums_and_export.md) | M7 — Albums & Safe Export | Virtual smart albums, document classifier heuristics, non-destructive export |
 
 *More guides will be added as we complete each milestone!*
 

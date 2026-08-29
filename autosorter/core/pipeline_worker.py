@@ -41,6 +41,7 @@ from autosorter.core.cluster import (
     pick_cover_faces,
     consolidate_clusters,
 )
+from autosorter.core.doc_classifier import classify_image
 from autosorter.core.db import Database
 from autosorter.core.face_crop import align_face, save_face_thumb
 from autosorter.core.face_detect import FaceDetector
@@ -245,6 +246,22 @@ class PipelineWorker(QThread):
                     )
 
                 db.update_status(image_id, "processed")
+
+                # ── M7: Classify image as photo vs screenshot/document ──
+                # Run the lightweight heuristic classifier on the thumbnail
+                # we just generated. This adds < 5ms per image and avoids
+                # a separate pass over the database later.
+                face_count = len(db.get_faces_for_image(image_id))
+                doc_score = classify_image(
+                    path=image_path,
+                    thumbnail_path=thumb_path,
+                    width=width,
+                    height=height,
+                    face_count=face_count,
+                )
+                if doc_score > 0.0:
+                    db.update_doc_score(image_id, doc_score)
+
             else:
                 db.update_status(image_id, "error", error="decode failed")
                 summary["errors"] += 1

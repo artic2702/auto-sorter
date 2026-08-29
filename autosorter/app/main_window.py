@@ -62,6 +62,7 @@ from autosorter.core.db import Database
 from autosorter.core.pipeline_worker import PipelineWorker
 from autosorter.app.photo_viewer import PhotoViewer
 from autosorter.app.people_panel import PeoplePanel
+from autosorter.app.albums_panel import AlbumsPanel
 
 
 # Thumbnail display size in the grid (pixels)
@@ -242,6 +243,14 @@ class MainWindow(QMainWindow):
         people_layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self._people_container)
 
+        # --- Albums panel (M7) ---
+        self._albums_panel: AlbumsPanel | None = None
+        self._albums_container = QWidget()
+        self._albums_container.setVisible(False)
+        albums_layout = QVBoxLayout(self._albums_container)
+        albums_layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self._albums_container)
+
         # --- Thumbnail grid (inside a scroll area) ---
         self._grid_scroll = QScrollArea()
         self._grid_scroll.setWidgetResizable(True)
@@ -361,6 +370,9 @@ class MainWindow(QMainWindow):
                 self._load_thumbnail_grid()
             if state["persons"] > 0:
                 self._show_people_panel()
+            # M7: Show albums panel if library has data
+            if state["total"] > 0:
+                self._show_albums_panel()
 
         except Exception:
             self._library_label.setVisible(False)
@@ -505,6 +517,9 @@ class MainWindow(QMainWindow):
 
             if state["persons"] > 0:
                 self._show_people_panel()
+            # M7: Refresh albums panel after pipeline
+            if state["total"] > 0:
+                self._show_albums_panel()
 
         except Exception:
             pass
@@ -614,3 +629,15 @@ class MainWindow(QMainWindow):
 
         self._people_panel.load_persons()
         self._people_container.setVisible(True)
+
+    def _show_albums_panel(self) -> None:
+        """Create or refresh the albums panel (M7)."""
+        if self._data_folder is None:
+            return
+
+        if self._albums_panel is None:
+            self._albums_panel = AlbumsPanel(self._data_folder)
+            self._albums_container.layout().addWidget(self._albums_panel)
+
+        self._albums_panel.load_albums()
+        self._albums_container.setVisible(True)
