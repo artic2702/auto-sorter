@@ -278,8 +278,10 @@ class AlbumDetailView(QDialog):
                 thumb_label.setText("❌")
 
             # Click thumbnail to open full photo in PhotoViewer
-            image_path = item.get("path") if not self._is_face_album else item.get("image_path")
-            image_id = item.get("id") if not self._is_face_album else item.get("image_id")
+            # sqlite3.Row doesn't have .get() — convert to dict first
+            item_dict = dict(item)
+            image_path = item_dict.get("path") if not self._is_face_album else item_dict.get("image_path")
+            image_id = item_dict.get("id") if not self._is_face_album else item_dict.get("image_id")
             if image_path and image_id:
                 thumb_label.mousePressEvent = lambda ev, ip=image_path, iid=image_id: (
                     self._open_photo_viewer(ip, iid) if ev.button() == Qt.MouseButton.LeftButton else None
