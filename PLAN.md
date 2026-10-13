@@ -155,7 +155,7 @@ d:\Auto_sorter\
 | M6 | **Resume/incremental: kill-and-relaunch resume, new-photos-only, moved-file reattach** | kill mid-scan → resumes exactly; new photos of named person auto-file |
 | M7 | Albums (Group/Unknown/Review/Text&Docs) + optional Export | group photo under each person with ONE file on disk; export never touches sources |
 | M8 | **Performance: 20k+ test, speed dial tuning, low-spec benchmark, memory cap verified** | documented img/s on min-spec machine; RAM < 1.5 GB; thread pool + speed dial (Quiet/Normal/Fast) |
-| M9 | PyInstaller + Inno Setup installer | clean Windows VM, **network disabled**: install → scan → name → restart → resume all work; zero network calls observed |
+| M9 | **PyInstaller + Inno Setup installer** | clean Windows VM, **network disabled**: install → scan → name → restart → resume all work; zero network calls observed |
 
 ## Main risks
 
@@ -183,3 +183,4 @@ OCR/search, semantic search, pets/objects, video, blur/best-shot detection, dupl
 - 2026-08-27 — M6 done. Unified single-button pipeline (scan→detect→embed→cluster), crash-safe SQLite resume, SHA-256 moved-file reattach, missing-file detection, true upsert fix (INSERT OR REPLACE → ON CONFLICT preserving faces). All 129 tests passing.
 - 2026-08-29 — M7 done. Virtual smart albums (Group Photos, Unknown Faces, Text & Documents) powered by SQL queries. Lightweight heuristic document/screenshot classifier (filename, resolution, color entropy, edge density). Safe export engine copying photos into organized person folders with group photo duplication, collision resolution, and resume support. All 170 tests passing.
 - 2026-08-30 — M8 done. Performance & memory cap: Multi-worker thread pool for Stage 2 (YuNet + SFace parallel inference), Speed Dial UI (Quiet: 1 thread / Normal: half cores / Fast: all cores), below-normal process priority for non-intrusive scanning, bounded queue with memory backpressure (< 1.5 GB RAM cap), reduced-size image decode (max_decode_dim via PIL draft/resize), batch SQLite commits (20x I/O reduction), and standalone benchmark tool (tools/benchmark.py). All 188 tests passing.
+- 2026-08-31 — M9 done. Packaging & Distribution: PyInstaller onedir distribution (no UPX to prevent AV false positives, GUI mode without console window), custom high-res multi-layer icon (packaging/app.ico), robust runtime resource locator across frozen environments (autosorter/paths.py), Inno Setup installer script (packaging/installer.iss with modern x64 architecture, LZMA2 ultra compression, per-user/admin dialog, clean uninstaller, desktop shortcut), automated build pipeline (packaging/build.py), smoke test verifying compiled binary execution, and full offline zero-telemetry test suite. All 205 tests passing.
