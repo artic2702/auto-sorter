@@ -1156,10 +1156,8 @@ class Database:
         cursor = self._conn.execute(
             """
             SELECT id, path FROM images
-            WHERE sha256 = ? AND path != ?
-            ORDER BY
-                CASE status WHEN 'missing' THEN 0 ELSE 1 END,
-                id
+            WHERE sha256 = ? AND path != ? AND status = 'missing'
+            ORDER BY id
             LIMIT 1
             """,
             (sha256, new_path),
@@ -1167,6 +1165,12 @@ class Database:
         row = cursor.fetchone()
         if row is None:
             return None
+
+        # If new_path already exists (e.g. pending placeholder inserted by scan_folder),
+        # remove it before updating the old row's path so the UNIQUE constraint is satisfied.
+        existing = self.get_image_by_path(new_path)
+        if existing and existing["id"] != row["id"]:
+            self._conn.execute("DELETE FROM images WHERE id = ?", (existing["id"],))
 
         # Update path in-place — preserves row ID and all linked faces
         self._conn.execute(

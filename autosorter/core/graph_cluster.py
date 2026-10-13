@@ -634,6 +634,8 @@ def run_graph_clustering(
         unknown_indices = peripheral_faces
 
     # Step 10: Pre-Commit Co-Occurrence Verification across all formed clusters
+    # Instead of aborting on violations, RESOLVE them by evicting the lower-quality
+    # duplicate face from each offending cluster, routing it to unknown.
     total_violations = 0
     final_person_to_faces: Dict[int, List[int]] = defaultdict(list)
     for pid, members in consolidated_cores.items():
@@ -641,13 +643,33 @@ def run_graph_clustering(
     for face_idx, pid in peripheral_assignments.items():
         final_person_to_faces[pid].append(face_idx)
 
-    # Audit every formed person: ensure no photo ID appears more than once
-    for pid, members in final_person_to_faces.items():
-        img_counts = defaultdict(int)
+    # Audit every formed person: resolve any photo ID appearing more than once
+    # by keeping the face with the highest quality and evicting the rest.
+    qualities = np.array([r["quality"] or 0.0 for r in cluster_rows], dtype=np.float32)
+    evicted_faces: List[int] = []
+
+    for pid in list(final_person_to_faces.keys()):
+        members = final_person_to_faces[pid]
+        # Group face indices by their image_id
+        img_to_faces: Dict[int, List[int]] = defaultdict(list)
         for idx in members:
-            img_counts[int(image_ids[idx])] += 1
-        violations = sum(1 for cnt in img_counts.values() if cnt > 1)
-        total_violations += violations
+            img_to_faces[int(image_ids[idx])].append(idx)
+
+        clean_members = []
+        for img_id, face_indices in img_to_faces.items():
+            if len(face_indices) > 1:
+                # Co-occurrence violation: keep the best face, evict the rest
+                total_violations += 1
+                face_indices.sort(key=lambda fi: qualities[fi], reverse=True)
+                clean_members.append(face_indices[0])
+                evicted_faces.extend(face_indices[1:])
+            else:
+                clean_members.append(face_indices[0])
+
+        final_person_to_faces[pid] = clean_members
+
+    # Route evicted faces to the unknown pool
+    unknown_indices.extend(evicted_faces)
 
     cluster_sizes = sorted([len(m) for m in final_person_to_faces.values()], reverse=True)
     report = ClusterValidationReport(
@@ -657,12 +679,12 @@ def run_graph_clustering(
         unknown_count=len(unknown_indices),
         co_occurrence_violations=total_violations,
         cluster_sizes=cluster_sizes,
-        passed=(total_violations == 0),
-        error_message=f"Found {total_violations} co-occurrence violations!" if total_violations > 0 else None
+        passed=True,  # violations are now resolved, not blocking
+        error_message=f"Resolved {total_violations} co-occurrence violations by evicting duplicates." if total_violations > 0 else None
     )
 
-    # Abort commit if running dry-run or if safety checks failed
-    if dry_run or not report.passed:
+    # Abort commit only if running dry-run
+    if dry_run:
         return report
 
     # Step 11: Atomic SQLite Transactional Commit

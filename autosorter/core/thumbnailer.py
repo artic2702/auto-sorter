@@ -105,7 +105,10 @@ def _decode_raw_image(raw_bytes: bytes) -> Optional[np.ndarray]:
         return None
 
 
-def _read_image_safe(file_path: str) -> Optional[np.ndarray]:
+def _read_image_safe(
+    file_path: str,
+    max_decode_dim: Optional[int] = None,
+) -> Optional[np.ndarray]:
     """
     Read an image file in a way that handles Unicode Windows paths,
     standard formats, HEIC/HEIF, and Camera RAW formats.
@@ -115,6 +118,9 @@ def _read_image_safe(file_path: str) -> Optional[np.ndarray]:
     Without this, iPhone portrait photos appear sideways in memory and
     face detection fails completely (YuNet expects upright faces).
 
+    Optional max_decode_dim reduces memory by draft-decoding large images
+    directly at lower resolution (e.g. 4000px cap).
+
     Decoding pipeline:
       1. np.fromfile() reads raw bytes from disk (handles Unicode paths)
       2. RAW path: rawpy embedded preview extraction for .CR2, .NEF, .ARW, .DNG, etc.
@@ -123,6 +129,8 @@ def _read_image_safe(file_path: str) -> Optional[np.ndarray]:
 
     Args:
         file_path: Full path to the image file.
+        max_decode_dim: Optional maximum dimension. If the image exceeds
+                       this, it will be decoded at reduced resolution.
 
     Returns:
         A NumPy array of shape (height, width, 3) in BGR color order,
@@ -143,6 +151,15 @@ def _read_image_safe(file_path: str) -> Optional[np.ndarray]:
         if ext_lower in _RAW_EXTENSIONS:
             raw_img = _decode_raw_image(raw_bytes.tobytes())
             if raw_img is not None:
+                if max_decode_dim:
+                    h, w = raw_img.shape[:2]
+                    if max(h, w) > max_decode_dim:
+                        scale = max_decode_dim / max(h, w)
+                        raw_img = cv2.resize(
+                            raw_img,
+                            (max(1, int(w * scale)), max(1, int(h * scale))),
+                            interpolation=cv2.INTER_AREA,
+                        )
                 return raw_img
 
         # Step 3: PIL path with EXIF auto-rotation (handles JPEG, PNG, HEIC, etc.)
@@ -150,7 +167,18 @@ def _read_image_safe(file_path: str) -> Optional[np.ndarray]:
         # pixel data so iPhone portraits are upright for face detection.
         try:
             with Image.open(io.BytesIO(raw_bytes.tobytes())) as pil_img:
+                if max_decode_dim and (pil_img.width > max_decode_dim or pil_img.height > max_decode_dim):
+                    try:
+                        pil_img.draft("RGB", (max_decode_dim, max_decode_dim))
+                    except Exception:
+                        pass
                 pil_img = ImageOps.exif_transpose(pil_img)
+                if max_decode_dim:
+                    w, h = pil_img.size
+                    if max(w, h) > max_decode_dim:
+                        scale = max_decode_dim / max(w, h)
+                        new_size = (max(1, int(w * scale)), max(1, int(h * scale)))
+                        pil_img = pil_img.resize(new_size, Image.Resampling.BILINEAR)
                 if pil_img.mode != "RGB":
                     pil_img = pil_img.convert("RGB")
                 rgb_array = np.array(pil_img)
@@ -160,7 +188,17 @@ def _read_image_safe(file_path: str) -> Optional[np.ndarray]:
 
         # Step 4: Fallback — cv2.imdecode for edge cases PIL can't handle
         # NOTE: This path does NOT apply EXIF rotation, but it's a rare fallback
-        return cv2.imdecode(raw_bytes, cv2.IMREAD_COLOR)
+        img = cv2.imdecode(raw_bytes, cv2.IMREAD_COLOR)
+        if img is not None and max_decode_dim:
+            h, w = img.shape[:2]
+            if max(h, w) > max_decode_dim:
+                scale = max_decode_dim / max(h, w)
+                img = cv2.resize(
+                    img,
+                    (max(1, int(w * scale)), max(1, int(h * scale))),
+                    interpolation=cv2.INTER_AREA,
+                )
+        return img
 
     except (OSError, ValueError):
         # File doesn't exist, permission denied, or invalid data

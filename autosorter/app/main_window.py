@@ -45,6 +45,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QSize
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
+    QComboBox,
     QFileDialog,
     QGridLayout,
     QHBoxLayout,
@@ -59,6 +60,7 @@ from PySide6.QtWidgets import (
 
 from autosorter import __version__
 from autosorter.core.db import Database
+from autosorter.core.perf import SpeedMode
 from autosorter.core.pipeline_worker import PipelineWorker
 from autosorter.app.photo_viewer import PhotoViewer
 from autosorter.app.people_panel import PeoplePanel
@@ -216,6 +218,24 @@ class MainWindow(QMainWindow):
         self._cancel_btn.clicked.connect(self._cancel_pipeline)
         self._cancel_btn.setVisible(False)
         btn_row.addWidget(self._cancel_btn)
+
+        btn_row.addSpacing(16)
+        speed_lbl = QLabel("Speed:")
+        speed_lbl.setStyleSheet("font-size: 13px; color: #555;")
+        btn_row.addWidget(speed_lbl)
+
+        self._speed_combo = QComboBox()
+        self._speed_combo.setFixedHeight(36)
+        self._speed_combo.addItem("🔇 Quiet (1 thread)", SpeedMode.QUIET)
+        self._speed_combo.addItem("⚡ Normal (balanced)", SpeedMode.NORMAL)
+        self._speed_combo.addItem("🚀 Fast (all cores)", SpeedMode.FAST)
+        self._speed_combo.setCurrentIndex(1)  # Default: Normal
+        self._speed_combo.setToolTip(
+            "Quiet: 1 thread (low CPU)\n"
+            "Normal: half CPU cores (recommended)\n"
+            "Fast: all CPU cores (maximum throughput)"
+        )
+        btn_row.addWidget(self._speed_combo)
 
         btn_row.addStretch()
         layout.addLayout(btn_row)
@@ -387,8 +407,9 @@ class MainWindow(QMainWindow):
         if self._photo_folder is None or self._data_folder is None:
             return
 
+        speed_mode = self._speed_combo.currentData() or SpeedMode.NORMAL
         self._pipeline_worker = PipelineWorker(
-            self._photo_folder, self._data_folder
+            self._photo_folder, self._data_folder, speed_mode=speed_mode
         )
         self._pipeline_worker.stage_changed.connect(self._on_stage_changed)
         self._pipeline_worker.progress.connect(self._on_pipeline_progress)
@@ -396,6 +417,7 @@ class MainWindow(QMainWindow):
         self._pipeline_worker.error.connect(self._on_error)
 
         self._start_btn.setEnabled(False)
+        self._speed_combo.setEnabled(False)
         self._cancel_btn.setVisible(True)
         self._cancel_btn.setEnabled(True)
         self._cancel_btn.setText("Cancel")
@@ -443,6 +465,7 @@ class MainWindow(QMainWindow):
     def _on_pipeline_finished(self, summary: dict) -> None:
         """Handle pipeline completion — show results and enable re-scan."""
         self._start_btn.setEnabled(True)
+        self._speed_combo.setEnabled(True)
         self._cancel_btn.setVisible(False)
         self._cancel_btn.setEnabled(True)
         self._cancel_btn.setText("Cancel")
@@ -527,6 +550,7 @@ class MainWindow(QMainWindow):
     def _on_error(self, message: str) -> None:
         """Handle pipeline errors."""
         self._start_btn.setEnabled(True)
+        self._speed_combo.setEnabled(True)
         self._start_btn.setText("▶  Resume")
         self._cancel_btn.setVisible(False)
         self._progress_bar.setVisible(False)
