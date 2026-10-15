@@ -568,7 +568,7 @@ def clean_up_person_album(
     affected_pids: Set[int] = {person_id}
 
     # Execute all updates within an atomic database transaction
-    with db._conn:
+    with db.transaction():
         for f in faces:
             # Rule 1: Never alter user-confirmed face assignments
             if f["assign_source"] == "user" or not f["embedding"]:

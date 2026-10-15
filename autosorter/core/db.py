@@ -22,6 +22,7 @@ WAL mode changes this so:
 This is critical because our UI thread reads from the DB while the scanner writes to it.
 """
 
+import contextlib
 import sqlite3
 from pathlib import Path
 from typing import List, Optional
@@ -232,6 +233,7 @@ class Database:
         # Return rows as sqlite3.Row objects instead of plain tuples.
         # This lets us access columns by name: row["path"] instead of row[0]
         self._conn.row_factory = sqlite3.Row
+        self._tx_depth = 0
 
         self._setup()
 
@@ -259,6 +261,33 @@ class Database:
             ("schema_version", _SCHEMA_VERSION),
         )
         self._conn.commit()  # Save everything to disk right now.
+
+    def _commit(self) -> None:
+        """Commit unless inside a transaction() block (the block commits at exit)."""
+        if self._tx_depth == 0:
+            self._conn.commit()
+
+    @contextlib.contextmanager
+    def transaction(self):
+        # Never call db._conn.commit() inside a transaction() block. A transaction must be used from one thread at a time (each thread uses its own Database instance).
+        """All-or-nothing block; nestable. Commits at the outermost exit, rolls back on any exception."""
+        if self._tx_depth > 0:
+            self._tx_depth += 1
+            try:
+                yield self
+            finally:
+                self._tx_depth -= 1
+            return
+        self._tx_depth = 1
+        try:
+            yield self
+        except BaseException:
+            self._conn.rollback()
+            raise
+        else:
+            self._conn.commit()
+        finally:
+            self._tx_depth = 0
 
     # ------------------------------------------------------------------
     # Image operations
@@ -311,7 +340,7 @@ class Database:
             (path, size, mtime, sha256, width, height, taken_at,
              thumb_path, status, error),
         )
-        self._conn.commit()
+        self._commit()
         # lastrowid gives us the auto-generated ID of the row we just wrote.
         return cursor.lastrowid  # type: ignore[return-value]
 
@@ -404,7 +433,7 @@ class Database:
             "UPDATE images SET status = ?, error = ? WHERE id = ?",
             (status, error, image_id),
         )
-        self._conn.commit()
+        self._commit()
 
     def update_thumb(self, image_id: int, thumb_path: str,
                      width: int, height: int) -> None:
@@ -415,7 +444,7 @@ class Database:
             "UPDATE images SET thumb_path = ?, width = ?, height = ? WHERE id = ?",
             (thumb_path, width, height, image_id),
         )
-        self._conn.commit()
+        self._commit()
 
     # ------------------------------------------------------------------
     # Face operations (M2)
@@ -453,7 +482,7 @@ class Database:
             (image_id, bbox_x, bbox_y, bbox_w, bbox_h,
              det_score, landmarks, quality, thumb_path),
         )
-        self._conn.commit()
+        self._commit()
         return cursor.lastrowid  # type: ignore[return-value]
 
     def get_faces_for_image(self, image_id: int) -> list:
@@ -560,7 +589,7 @@ class Database:
             """,
             (image_id,),
         )
-        self._conn.commit()
+        self._commit()
 
     def get_all_images_with_thumbs(self) -> list:
         """
@@ -602,7 +631,7 @@ class Database:
             "UPDATE faces SET embedding = ? WHERE id = ?",
             (embedding_bytes, face_id),
         )
-        self._conn.commit()
+        self._commit()
 
     def iter_faces_needing_embedding(self):
         """
@@ -710,7 +739,7 @@ class Database:
             """,
             (display_name, centroid_bytes, face_count, cover_face_id),
         )
-        self._conn.commit()
+        self._commit()
         return cursor.lastrowid  # type: ignore[return-value]
 
     def update_person_centroid(
@@ -732,7 +761,7 @@ class Database:
             """,
             (centroid_bytes, face_count, person_id),
         )
-        self._conn.commit()
+        self._commit()
 
     def rename_person(self, person_id: int, new_name: str) -> None:
         """
@@ -753,7 +782,7 @@ class Database:
             """,
             (new_name, person_id),
         )
-        self._conn.commit()
+        self._commit()
 
     def assign_face_to_person(
         self,
@@ -781,7 +810,7 @@ class Database:
             """,
             (person_id, source, confidence, face_id),
         )
-        self._conn.commit()
+        self._commit()
 
     def get_all_persons(self) -> list:
         """
@@ -889,7 +918,7 @@ class Database:
             "UPDATE persons SET cover_face_id = ? WHERE id = ?",
             (face_id, person_id),
         )
-        self._conn.commit()
+        self._commit()
 
     def count_persons(self) -> int:
         """Count all visible, non-merged persons."""
@@ -917,7 +946,7 @@ class Database:
         if not faces:
             # No faces left for this person -> clean up empty record
             self._conn.execute("DELETE FROM persons WHERE id = ?", (person_id,))
-            self._conn.commit()
+            self._commit()
             return
 
         embs = []
@@ -952,7 +981,7 @@ class Database:
             """,
             (centroid_bytes, face_count, best_face_id, person_id),
         )
-        self._conn.commit()
+        self._commit()
 
     def merge_persons(self, source_person_id: int, target_person_id: int) -> None:
         """
@@ -974,7 +1003,7 @@ class Database:
             (target_person_id, source_person_id),
         )
         self._conn.execute("DELETE FROM persons WHERE id = ?", (source_person_id,))
-        self._conn.commit()
+        self._commit()
 
         self.recompute_person_centroid(target_person_id)
 
@@ -994,7 +1023,7 @@ class Database:
             (person_id,),
         )
         self._conn.execute("DELETE FROM persons WHERE id = ?", (person_id,))
-        self._conn.commit()
+        self._commit()
 
     def unassign_face(self, face_id: int) -> Optional[int]:
         """
@@ -1018,7 +1047,7 @@ class Database:
             """,
             (face_id,),
         )
-        self._conn.commit()
+        self._commit()
 
         if old_person_id is not None:
             self.recompute_person_centroid(old_person_id)
@@ -1047,7 +1076,7 @@ class Database:
             """,
             (new_person_id, face_id),
         )
-        self._conn.commit()
+        self._commit()
 
         self.recompute_person_centroid(new_person_id)
         if old_person_id is not None:
@@ -1082,7 +1111,7 @@ class Database:
             """,
             (person_id, face_id),
         )
-        self._conn.commit()
+        self._commit()
 
         if old_person_id is not None:
             self.recompute_person_centroid(old_person_id)
@@ -1126,7 +1155,7 @@ class Database:
                 missing_count += 1
 
         if missing_count > 0:
-            self._conn.commit()
+            self._commit()
 
         return missing_count
 
@@ -1180,7 +1209,7 @@ class Database:
             """,
             (new_path, row["id"]),
         )
-        self._conn.commit()
+        self._commit()
         return row["id"]
 
     def get_all_image_paths(self) -> set:
@@ -1356,7 +1385,7 @@ class Database:
             "UPDATE images SET doc_score = ? WHERE id = ?",
             (score, image_id),
         )
-        self._conn.commit()
+        self._commit()
 
     # ------------------------------------------------------------------
     # Lifecycle
