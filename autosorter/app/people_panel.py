@@ -17,10 +17,10 @@ People panel — displays person cards with face thumbnails, rename, merge, and 
 """
 
 from pathlib import Path
-from typing import List, Optional
+from typing import Optional
 
 from PySide6.QtCore import QSize, Qt, Signal
-from PySide6.QtGui import QAction, QIcon, QMouseEvent, QPixmap
+from PySide6.QtGui import QIcon, QMouseEvent, QPixmap
 from PySide6.QtWidgets import (
     QDialog,
     QGridLayout,

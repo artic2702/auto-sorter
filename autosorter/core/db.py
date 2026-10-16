@@ -25,7 +25,7 @@ This is critical because our UI thread reads from the DB while the scanner write
 import contextlib
 import sqlite3
 from pathlib import Path
-from typing import List, Optional
+from typing import Optional
 
 import numpy as np
 

@@ -2,19 +2,14 @@
 Unified pipeline worker — runs all 4 stages in a single background thread.
 
 === WHAT IS THIS FILE? (M6) ===
-Before M6, the user had to click 3 separate buttons:
-  1. "Start Scan"      → ScanWorker
-  2. "Detect Faces"    → DetectWorker
-  3. "Identify People" → IdentityWorker
+The pipeline executes all 4 stages automatically in sequence as methods
+of PipelineWorker:
 
-This was tedious and error-prone. M6 replaces all three with a single
-"▶ Start" button that runs everything automatically in sequence:
-
-  Stage 1: SCAN      — find new files, hash them, generate thumbnails,
+  Stage 1: SCAN      — _run_scan_stage: find new files, hash them, generate thumbnails,
                         detect moved files (SHA-256 reattach), mark missing
-  Stage 2: DETECT    — run YuNet face detection on all new images
-  Stage 3: EMBED     — run SFace to compute 128-d embeddings for new faces
-  Stage 4: IDENTIFY  — run incremental centroid clustering on unassigned faces
+  Stage 2: DETECT    — _run_detect_stage: run YuNet face detection on all new images
+  Stage 3: EMBED     — _run_embed_stage: run SFace to compute 128-d embeddings for new faces
+  Stage 4: IDENTIFY  — _run_cluster_stage: run incremental centroid clustering on unassigned faces
 
 === WHY ONE WORKER? ===
 1. One button, one progress display — much simpler UX
@@ -47,12 +42,6 @@ from typing import List, Optional, Tuple
 
 from PySide6.QtCore import QThread, Signal
 
-from autosorter.core.cluster import (
-    ClusterEngine,
-    AssignAction,
-    pick_cover_faces,
-    consolidate_clusters,
-)
 from autosorter.core.doc_classifier import classify_image
 from autosorter.core.db import Database
 from autosorter.core.face_crop import align_face, save_face_thumb
@@ -256,7 +245,6 @@ class PipelineWorker(QThread):
         thumbs_dir = self._data_folder / "thumbs"
         pending_count = db.count_images(status="pending")
         done = 0
-        uncommitted = 0
 
         for row in db.iter_pending():
             if self._cancel:

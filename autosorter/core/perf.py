@@ -28,7 +28,6 @@ exceeds our soft limit.
 import os
 import sys
 from enum import Enum
-from typing import Optional
 
 
 # ══════════════════════════════════════════════════════════════════════

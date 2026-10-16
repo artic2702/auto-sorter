@@ -32,7 +32,6 @@ into each participant's folder. Source files are NEVER modified or deleted.
    with matching size (resume support after interruption).
 """
 
-import os
 import shutil
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Set

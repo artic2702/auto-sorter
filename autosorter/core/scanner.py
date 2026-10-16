@@ -173,7 +173,7 @@ def scan_folder(
             # We skip them silently instead of crashing.
             errors += 1
             continue
-        except OSError as e:
+        except OSError:
             # Other OS errors (network drives disconnected, etc.)
             errors += 1
             continue

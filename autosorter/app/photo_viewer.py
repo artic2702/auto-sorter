@@ -15,14 +15,12 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from PySide6.QtCore import QPoint, QRect, Qt, Signal
-from PySide6.QtGui import QColor, QCursor, QImage, QMouseEvent, QPainter, QPen, QPixmap
+from PySide6.QtGui import QColor, QImage, QMouseEvent, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QDialog,
     QHBoxLayout,
-    QInputDialog,
     QLabel,
     QMenu,
-    QMessageBox,
     QPushButton,
     QScrollArea,
     QVBoxLayout,
