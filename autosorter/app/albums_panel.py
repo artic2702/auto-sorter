@@ -293,9 +293,8 @@ class AlbumDetailView(QDialog):
         """Open the full photo in PhotoViewer when clicked."""
         try:
             db_path = self._data_folder / "library.db"
-            db = Database(db_path)
-            faces = db.get_faces_for_image(image_id)
-            db.close()
+            with Database(db_path) as db:
+                faces = db.get_faces_for_image(image_id)
 
             from autosorter.app.photo_viewer import PhotoViewer
             viewer = PhotoViewer(image_path, faces, data_folder=self._data_folder)
@@ -456,9 +455,8 @@ class ExportOptionsDialog(QDialog):
             return
 
         try:
-            db = Database(db_path)
-            self._persons = db.get_all_persons()
-            db.close()
+            with Database(db_path) as db:
+                self._persons = db.get_all_persons()
         except Exception:
             return
 
@@ -624,14 +622,11 @@ class AlbumsPanel(QWidget):
             return
 
         try:
-            db = Database(db_path)
-
-            # Count items for each album
-            group_count = len(db.get_group_photos())
-            unknown_count = len(db.get_unknown_faces())
-            docs_count = len(db.get_text_and_docs())
-
-            db.close()
+            with Database(db_path) as db:
+                # Count items for each album
+                group_count = len(db.get_group_photos())
+                unknown_count = len(db.get_unknown_faces())
+                docs_count = len(db.get_text_and_docs())
         except Exception:
             return
 
@@ -665,25 +660,21 @@ class AlbumsPanel(QWidget):
         if not db_path.is_file():
             return
 
-        db = Database(db_path)
-
-        if album_type == "group":
-            items = db.get_group_photos()
-            title = "👥 Group Photos"
-            is_face = False
-        elif album_type == "unknown":
-            items = db.get_unknown_faces()
-            title = "❓ Unknown Faces"
-            is_face = True
-        elif album_type == "docs":
-            items = db.get_text_and_docs()
-            title = "📄 Text & Documents"
-            is_face = False
-        else:
-            db.close()
-            return
-
-        db.close()
+        with Database(db_path) as db:
+            if album_type == "group":
+                items = db.get_group_photos()
+                title = "👥 Group Photos"
+                is_face = False
+            elif album_type == "unknown":
+                items = db.get_unknown_faces()
+                title = "❓ Unknown Faces"
+                is_face = True
+            elif album_type == "docs":
+                items = db.get_text_and_docs()
+                title = "📄 Text & Documents"
+                is_face = False
+            else:
+                return
 
         if not items:
             QMessageBox.information(self, title, "No items in this album.")

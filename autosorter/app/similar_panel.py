@@ -82,14 +82,13 @@ class SimilarPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 12, 16, 12)
 
-        # Open database and load the query face
-        db = Database(self._data_folder / "library.db")
-        query_face = db.get_face_by_id(self._query_face_id)
-
-        if query_face is None or query_face["embedding"] is None:
-            layout.addWidget(QLabel("❌ Face not found or has no embedding."))
-            db.close()
-            return
+        # Open database and load the query face and comparison embeddings
+        with Database(self._data_folder / "library.db") as db:
+            query_face = db.get_face_by_id(self._query_face_id)
+            if query_face is None or query_face["embedding"] is None:
+                layout.addWidget(QLabel("❌ Face not found or has no embedding."))
+                return
+            all_faces = db.get_all_embeddings()
 
         # --- Query face header ---
         header = QHBoxLayout()
@@ -134,8 +133,6 @@ class SimilarPanel(QWidget):
         query_embedding = FaceRecognizer.bytes_to_embedding(
             query_face["embedding"]
         )
-        all_faces = db.get_all_embeddings()
-        db.close()
 
         if len(all_faces) < 2:
             layout.addWidget(QLabel("Not enough faces to compare."))

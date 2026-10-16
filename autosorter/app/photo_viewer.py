@@ -177,13 +177,12 @@ class PhotoViewer(QWidget):
         if self._data_folder:
             db_path = self._data_folder / "library.db"
             if db_path.exists():
-                db = Database(db_path)
-                fresh_faces = []
-                for f in self._faces:
-                    refreshed = db.get_face_by_id(f["id"])
-                    fresh_faces.append(refreshed if refreshed else f)
-                self._faces = fresh_faces
-                db.close()
+                with Database(db_path) as db:
+                    fresh_faces = []
+                    for f in self._faces:
+                        refreshed = db.get_face_by_id(f["id"])
+                        fresh_faces.append(refreshed if refreshed else f)
+                    self._faces = fresh_faces
 
         if self._faces:
             painter = QPainter(display_pixmap)
@@ -243,18 +242,16 @@ class PhotoViewer(QWidget):
             return
 
         face_id = face_row["id"]
-        db = Database(self._data_folder / "library.db")
-        fresh_face = db.get_face_by_id(face_id)
-        if not fresh_face:
-            db.close()
-            return
+        with Database(self._data_folder / "library.db") as db:
+            fresh_face = db.get_face_by_id(face_id)
+            if not fresh_face:
+                return
 
-        person_name = "Unassigned"
-        if fresh_face["person_id"]:
-            person = db.get_person_by_id(fresh_face["person_id"])
-            if person:
-                person_name = person["display_name"]
-        db.close()
+            person_name = "Unassigned"
+            if fresh_face["person_id"]:
+                person = db.get_person_by_id(fresh_face["person_id"])
+                if person:
+                    person_name = person["display_name"]
 
         # Build context popup menu
         menu = QMenu(self)
@@ -281,26 +278,23 @@ class PhotoViewer(QWidget):
             dialog = MoveFaceDialog(fresh_face["person_id"], self._data_folder, self)
             if dialog.exec() == QDialog.DialogCode.Accepted:
                 target_id, new_name = dialog.get_result()
-                db = Database(self._data_folder / "library.db")
-                if target_id == -1 and new_name:
-                    db.create_person_for_face(face_id, new_name)
-                elif target_id and target_id > 0:
-                    db.reassign_face(face_id, target_id)
-                db.close()
+                with Database(self._data_folder / "library.db") as db:
+                    if target_id == -1 and new_name:
+                        db.create_person_for_face(face_id, new_name)
+                    elif target_id and target_id > 0:
+                        db.reassign_face(face_id, target_id)
                 self._load_and_draw()
                 self.changed.emit()
 
         elif action == unassign_act and unassign_act is not None:
-            db = Database(self._data_folder / "library.db")
-            db.unassign_face(face_id)
-            db.close()
+            with Database(self._data_folder / "library.db") as db:
+                db.unassign_face(face_id)
             self._load_and_draw()
             self.changed.emit()
 
         elif action == cover_act and cover_act is not None:
-            db = Database(self._data_folder / "library.db")
-            db.update_person_cover(fresh_face["person_id"], face_id)
-            db.close()
+            with Database(self._data_folder / "library.db") as db:
+                db.update_person_cover(fresh_face["person_id"], face_id)
             self._load_and_draw()
             self.changed.emit()
 

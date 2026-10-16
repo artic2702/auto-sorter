@@ -281,9 +281,8 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            db = Database(db_path)
-            state = db.get_pipeline_state()
-            db.close()
+            with Database(db_path) as db:
+                state = db.get_pipeline_state()
 
             parts = []
             if state["total"] > 0:
@@ -457,9 +456,8 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            db = Database(db_path)
-            state = db.get_pipeline_state()
-            db.close()
+            with Database(db_path) as db:
+                state = db.get_pipeline_state()
 
             parts = []
             if state["total"] > 0:
@@ -515,9 +513,8 @@ class MainWindow(QMainWindow):
         if not db_path.is_file():
             return
 
-        db = Database(db_path)
-        images = db.get_all_images_with_thumbs()
-        db.close()
+        with Database(db_path) as db:
+            images = db.get_all_images_with_thumbs()
 
         if not images:
             return
@@ -542,9 +539,8 @@ class MainWindow(QMainWindow):
             return
 
         db_path = self._data_folder / "library.db"
-        db = Database(db_path)
-        faces = db.get_faces_for_image(image_row["id"])
-        db.close()
+        with Database(db_path) as db:
+            faces = db.get_faces_for_image(image_row["id"])
 
         viewer = PhotoViewer(
             image_row["path"], faces, data_folder=self._data_folder

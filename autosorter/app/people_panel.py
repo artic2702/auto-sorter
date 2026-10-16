@@ -128,35 +128,33 @@ class MergePersonDialog(QDialog):
 
     def _populate_list(self) -> None:
         self._list_widget.clear()
-        db = Database(self._data_folder / "library.db")
-        persons = db.get_all_persons()
+        with Database(self._data_folder / "library.db") as db:
+            persons = db.get_all_persons()
 
-        filter_text = self._search_edit.text().strip().lower()
+            filter_text = self._search_edit.text().strip().lower()
 
-        for p in persons:
-            if p["id"] == self._source_id:
-                continue
+            for p in persons:
+                if p["id"] == self._source_id:
+                    continue
 
-            name = p["display_name"]
-            if filter_text and filter_text not in name.lower():
-                continue
+                name = p["display_name"]
+                if filter_text and filter_text not in name.lower():
+                    continue
 
-            count = p["face_count"]
-            item_text = f"  {name}  ({count} photo{'s' if count != 1 else ''})"
-            item = QListWidgetItem(item_text)
-            item.setData(Qt.ItemDataRole.UserRole, p["id"])
-            item.setData(Qt.ItemDataRole.UserRole + 1, name)
+                count = p["face_count"]
+                item_text = f"  {name}  ({count} photo{'s' if count != 1 else ''})"
+                item = QListWidgetItem(item_text)
+                item.setData(Qt.ItemDataRole.UserRole, p["id"])
+                item.setData(Qt.ItemDataRole.UserRole + 1, name)
 
-            if p["cover_face_id"]:
-                c_face = db.get_face_by_id(p["cover_face_id"])
-                if c_face and c_face["thumb_path"] and Path(c_face["thumb_path"]).exists():
-                    pix = QPixmap(c_face["thumb_path"])
-                    if not pix.isNull():
-                        item.setIcon(QIcon(pix))
+                if p["cover_face_id"]:
+                    c_face = db.get_face_by_id(p["cover_face_id"])
+                    if c_face and c_face["thumb_path"] and Path(c_face["thumb_path"]).exists():
+                        pix = QPixmap(c_face["thumb_path"])
+                        if not pix.isNull():
+                            item.setIcon(QIcon(pix))
 
-            self._list_widget.addItem(item)
-
-        db.close()
+                self._list_widget.addItem(item)
 
     def _filter_list(self) -> None:
         self._populate_list()
@@ -228,28 +226,26 @@ class MoveFaceDialog(QDialog):
         new_item.setData(Qt.ItemDataRole.UserRole, -1)
         self._list_widget.addItem(new_item)
 
-        db = Database(self._data_folder / "library.db")
-        persons = db.get_all_persons()
+        with Database(self._data_folder / "library.db") as db:
+            persons = db.get_all_persons()
 
-        for p in persons:
-            if p["id"] == self._current_person_id:
-                continue
+            for p in persons:
+                if p["id"] == self._current_person_id:
+                    continue
 
-            count = p["face_count"]
-            item_text = f"👤  {p['display_name']} ({count} photos)"
-            item = QListWidgetItem(item_text)
-            item.setData(Qt.ItemDataRole.UserRole, p["id"])
+                count = p["face_count"]
+                item_text = f"👤  {p['display_name']} ({count} photos)"
+                item = QListWidgetItem(item_text)
+                item.setData(Qt.ItemDataRole.UserRole, p["id"])
 
-            if p["cover_face_id"]:
-                c_face = db.get_face_by_id(p["cover_face_id"])
-                if c_face and c_face["thumb_path"] and Path(c_face["thumb_path"]).exists():
-                    pix = QPixmap(c_face["thumb_path"])
-                    if not pix.isNull():
-                        item.setIcon(QIcon(pix))
+                if p["cover_face_id"]:
+                    c_face = db.get_face_by_id(p["cover_face_id"])
+                    if c_face and c_face["thumb_path"] and Path(c_face["thumb_path"]).exists():
+                        pix = QPixmap(c_face["thumb_path"])
+                        if not pix.isNull():
+                            item.setIcon(QIcon(pix))
 
-            self._list_widget.addItem(item)
-
-        db.close()
+                self._list_widget.addItem(item)
         layout.addWidget(self._list_widget, stretch=1)
 
         btn_row = QHBoxLayout()
@@ -524,17 +520,15 @@ class PersonDetailPanel(QWidget):
             self._populate_grid()
 
     def _reload_data(self) -> None:
-        db = Database(self._data_folder / "library.db")
-        person = db.get_person_by_id(self._person["id"])
-        if not person:
-            db.close()
-            self.changed.emit()
-            self.close()
-            return
+        with Database(self._data_folder / "library.db") as db:
+            person = db.get_person_by_id(self._person["id"])
+            if not person:
+                self.changed.emit()
+                self.close()
+                return
 
-        self._person = person
-        self._faces = list(db.get_faces_for_person(self._person["id"]))
-        db.close()
+            self._person = person
+            self._faces = list(db.get_faces_for_person(self._person["id"]))
 
         self._title_label.setText(
             f"<b style='font-size: 18px;'>👤 {self._person['display_name']}</b>"
@@ -545,20 +539,17 @@ class PersonDetailPanel(QWidget):
 
     def _on_open_full_photo(self, face_id: int) -> None:
         """Open the full original photo in PhotoViewer."""
-        db = Database(self._data_folder / "library.db")
-        face = db.get_face_by_id(face_id)
-        if not face:
-            db.close()
-            return
+        with Database(self._data_folder / "library.db") as db:
+            face = db.get_face_by_id(face_id)
+            if not face:
+                return
 
-        img_row = db.get_image_by_id(face["image_id"])
-        if not img_row:
-            db.close()
-            return
+            img_row = db.get_image_by_id(face["image_id"])
+            if not img_row:
+                return
 
-        img_path = img_row["path"]
-        faces = db.get_faces_for_image(face["image_id"])
-        db.close()
+            img_path = img_row["path"]
+            faces = db.get_faces_for_image(face["image_id"])
 
         from autosorter.app.photo_viewer import PhotoViewer
         viewer = PhotoViewer(img_path, faces, data_folder=self._data_folder)
@@ -571,9 +562,8 @@ class PersonDetailPanel(QWidget):
             self, "Rename Person", "Enter new name for this person:", text=self._person["display_name"]
         )
         if ok and new_name.strip():
-            db = Database(self._data_folder / "library.db")
-            db.rename_person(self._person["id"], new_name.strip())
-            db.close()
+            with Database(self._data_folder / "library.db") as db:
+                db.rename_person(self._person["id"], new_name.strip())
             self._reload_data()
 
     def _on_create_new_person_for_face(self, face_id: int) -> None:
@@ -581,33 +571,29 @@ class PersonDetailPanel(QWidget):
             self, "New Person Card", "Enter name for new person card:"
         )
         if ok and name.strip():
-            db = Database(self._data_folder / "library.db")
-            db.create_person_for_face(face_id, name.strip())
-            db.close()
+            with Database(self._data_folder / "library.db") as db:
+                db.create_person_for_face(face_id, name.strip())
             self._reload_data()
 
     def _on_unassign_face(self, face_id: int) -> None:
-        db = Database(self._data_folder / "library.db")
-        db.unassign_face(face_id)
-        db.close()
+        with Database(self._data_folder / "library.db") as db:
+            db.unassign_face(face_id)
         self._reload_data()
 
     def _on_reassign_face(self, face_id: int) -> None:
         dialog = MoveFaceDialog(self._person["id"], self._data_folder, self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             target_id, new_name = dialog.get_result()
-            db = Database(self._data_folder / "library.db")
-            if target_id == -1 and new_name:
-                db.create_person_for_face(face_id, new_name)
-            elif target_id and target_id > 0:
-                db.reassign_face(face_id, target_id)
-            db.close()
+            with Database(self._data_folder / "library.db") as db:
+                if target_id == -1 and new_name:
+                    db.create_person_for_face(face_id, new_name)
+                elif target_id and target_id > 0:
+                    db.reassign_face(face_id, target_id)
             self._reload_data()
 
     def _on_set_cover_face(self, face_id: int) -> None:
-        db = Database(self._data_folder / "library.db")
-        db.update_person_cover(self._person["id"], face_id)
-        db.close()
+        with Database(self._data_folder / "library.db") as db:
+            db.update_person_cover(self._person["id"], face_id)
         self._reload_data()
 
     def _on_merge_clicked(self) -> None:
@@ -617,20 +603,16 @@ class PersonDetailPanel(QWidget):
         if dialog.exec() == QDialog.DialogCode.Accepted:
             target_id = dialog.get_selected_target_id()
             if target_id:
-                db = Database(self._data_folder / "library.db")
-                db.merge_persons(source_person_id=self._person["id"], target_person_id=target_id)
-                db.close()
+                with Database(self._data_folder / "library.db") as db:
+                    db.merge_persons(source_person_id=self._person["id"], target_person_id=target_id)
                 self.changed.emit()
                 self.close()
 
     def _on_recheck_clicked(self) -> None:
         """Scan this album for misplaced faces and shift them to better matching persons."""
         from autosorter.core.cluster import clean_up_person_album
-        db = Database(self._data_folder / "library.db")
-        try:
+        with Database(self._data_folder / "library.db") as db:
             summary = clean_up_person_album(db, self._person["id"])
-        finally:
-            db.close()
 
         if not summary:
             QMessageBox.information(
@@ -656,9 +638,8 @@ class PersonDetailPanel(QWidget):
             QMessageBox.StandardButton.No,
         )
         if reply == QMessageBox.StandardButton.Yes:
-            db = Database(self._data_folder / "library.db")
-            db.delete_person(self._person["id"])
-            db.close()
+            with Database(self._data_folder / "library.db") as db:
+                db.delete_person(self._person["id"])
             self.changed.emit()
             self.close()
 
@@ -688,16 +669,15 @@ class PersonDetailPanel(QWidget):
         db_path = self._data_folder / "library.db"
 
         try:
-            db = Database(db_path)
-            result = export_library(
-                db=db,
-                export_root=dest_root,
-                person_ids=[self._person["id"]],
-                include_group=False,
-                include_unknown=False,
-                include_docs=False,
-            )
-            db.close()
+            with Database(db_path) as db:
+                result = export_library(
+                    db=db,
+                    export_root=dest_root,
+                    person_ids=[self._person["id"]],
+                    include_group=False,
+                    include_unknown=False,
+                    include_docs=False,
+                )
 
             copied = result["files_copied"]
             skipped = result["files_skipped"]
@@ -935,55 +915,50 @@ class PeoplePanel(QWidget):
         if not db_path.is_file():
             return
 
-        db = Database(db_path)
-        persons = db.get_all_persons()
+        with Database(db_path) as db:
+            persons = db.get_all_persons()
 
-        if not persons:
-            placeholder = QLabel(
-                "<span style='color: gray; font-size: 13px;'>"
-                "No people discovered yet. Run 'Identify People' first."
-                "</span>"
+            if not persons:
+                placeholder = QLabel(
+                    "<span style='color: gray; font-size: 13px;'>"
+                    "No people discovered yet. Run 'Identify People' first."
+                    "</span>"
+                )
+                self._grid_layout.addWidget(placeholder, 0, 0)
+                self._title_label.setText("<b style='font-size: 16px;'>👤 People</b>")
+                return
+
+            self._title_label.setText(
+                f"<b style='font-size: 16px;'>👤 People</b>"
+                f"  <span style='color: gray;'>({len(persons)} people found)</span>"
             )
-            self._grid_layout.addWidget(placeholder, 0, 0)
-            db.close()
-            self._title_label.setText("<b style='font-size: 16px;'>👤 People</b>")
-            return
 
-        self._title_label.setText(
-            f"<b style='font-size: 16px;'>👤 People</b>"
-            f"  <span style='color: gray;'>({len(persons)} people found)</span>"
-        )
+            cols = max(1, (self.width() - 40) // 185)
+            for i, person in enumerate(persons):
+                cover_thumb = None
+                if person["cover_face_id"]:
+                    cover_face = db.get_face_by_id(person["cover_face_id"])
+                    if cover_face:
+                        cover_thumb = cover_face["thumb_path"]
 
-        cols = max(1, (self.width() - 40) // 185)
-        for i, person in enumerate(persons):
-            cover_thumb = None
-            if person["cover_face_id"]:
-                cover_face = db.get_face_by_id(person["cover_face_id"])
-                if cover_face:
-                    cover_thumb = cover_face["thumb_path"]
+                card = PersonCard(person, cover_thumb)
+                card.renamed.connect(self._on_person_renamed)
+                card.clicked.connect(self._on_person_clicked)
+                card.merge_requested.connect(self._on_card_merge_requested)
+                card.delete_requested.connect(self._on_card_delete_requested)
 
-            card = PersonCard(person, cover_thumb)
-            card.renamed.connect(self._on_person_renamed)
-            card.clicked.connect(self._on_person_clicked)
-            card.merge_requested.connect(self._on_card_merge_requested)
-            card.delete_requested.connect(self._on_card_delete_requested)
-
-            row = i // cols
-            col = i % cols
-            self._grid_layout.addWidget(card, row, col)
-
-        db.close()
+                row = i // cols
+                col = i % cols
+                self._grid_layout.addWidget(card, row, col)
 
     def _on_person_renamed(self, person_id: int, new_name: str) -> None:
-        db = Database(self._data_folder / "library.db")
-        db.rename_person(person_id, new_name)
-        db.close()
+        with Database(self._data_folder / "library.db") as db:
+            db.rename_person(person_id, new_name)
 
     def _on_person_clicked(self, person_id: int) -> None:
-        db = Database(self._data_folder / "library.db")
-        person = db.get_person_by_id(person_id)
-        faces = db.get_faces_for_person(person_id)
-        db.close()
+        with Database(self._data_folder / "library.db") as db:
+            person = db.get_person_by_id(person_id)
+            faces = db.get_faces_for_person(person_id)
 
         if person is None:
             return
@@ -998,9 +973,8 @@ class PeoplePanel(QWidget):
         if dialog.exec() == QDialog.DialogCode.Accepted:
             target_id = dialog.get_selected_target_id()
             if target_id:
-                db = Database(self._data_folder / "library.db")
-                db.merge_persons(source_person_id=person_id, target_person_id=target_id)
-                db.close()
+                with Database(self._data_folder / "library.db") as db:
+                    db.merge_persons(source_person_id=person_id, target_person_id=target_id)
                 self.load_persons()
 
     def _on_card_delete_requested(self, person_id: int, display_name: str) -> None:
@@ -1013,7 +987,6 @@ class PeoplePanel(QWidget):
             QMessageBox.StandardButton.No,
         )
         if reply == QMessageBox.StandardButton.Yes:
-            db = Database(self._data_folder / "library.db")
-            db.delete_person(person_id)
-            db.close()
+            with Database(self._data_folder / "library.db") as db:
+                db.delete_person(person_id)
             self.load_persons()

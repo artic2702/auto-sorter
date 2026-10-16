@@ -11,8 +11,8 @@ from PySide6.QtCore import QAbstractListModel, QModelIndex, QSize, Qt, Signal
 from PySide6.QtGui import QIcon, QPixmap, QPixmapCache
 from PySide6.QtWidgets import QListView, QWidget
 
-# Set 256 MB cache for thumbnails once at module import (256 * 1024 KB)
-QPixmapCache.setCacheLimit(256 * 1024)
+# Set 64 MB cache for thumbnails once at module import (64 * 1024 KB)
+QPixmapCache.setCacheLimit(64 * 1024)
 
 GRID_THUMB_SIZE = 120
 

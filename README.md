@@ -12,7 +12,6 @@ Milestones M0–M9 complete: full offline scanning, face detection, clustering, 
 
 - **Fully offline** — no cloud, no accounts, no uploads. Face analysis runs locally on CPU.
 - **People discovery** — faces are grouped into "Person 1, Person 2…"; name a group once and every photo (past and future) is labeled.
-- **Careful by default** — uncertain matches go to a Needs Review queue instead of being guessed.
 - **Gentle first scan** — runs at low priority in the background, pause/shutdown anytime, resumes exactly where it stopped.
 - **Originals untouched** — organization is virtual (database albums); files are only copied if you explicitly export.
 - **Low-end friendly** — targets Windows 10/11, dual-core CPU, 4 GB RAM, no GPU.
