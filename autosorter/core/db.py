@@ -460,6 +460,23 @@ class Database:
         )
         self._commit()
 
+    def mark_image_error(self, image_id: int, message: str) -> None:
+        """Record a processing failure and bump the retry counter."""
+        self._conn.execute(
+            "UPDATE images SET status = 'error', error = ?, error_count = error_count + 1 WHERE id = ?",
+            (message, image_id),
+        )
+        self._commit()
+
+    def requeue_failed_images(self, max_attempts: int = 3) -> int:
+        """Put failed images with fewer than max_attempts failures back to 'pending'. Returns count."""
+        cur = self._conn.execute(
+            "UPDATE images SET status = 'pending' WHERE status = 'error' AND error_count < ?",
+            (max_attempts,),
+        )
+        self._commit()
+        return cur.rowcount
+
     def update_thumb(self, image_id: int, thumb_path: str,
                      width: int, height: int) -> None:
         """

@@ -159,6 +159,7 @@ class PipelineWorker(QThread):
                 "files_skipped": 0,
                 "files_reattached": 0,
                 "files_missing": 0,
+                "files_requeued": 0,
                 "faces_detected": 0,
                 "faces_embedded": 0,
                 "faces_assigned": 0,
@@ -224,6 +225,7 @@ class PipelineWorker(QThread):
         detect moved files via SHA-256, and mark missing files.
         """
         self.stage_changed.emit("Scanning files", 1, self.TOTAL_STAGES)
+        summary["files_requeued"] = db.requeue_failed_images(max_attempts=3)
 
         # Phase 1a: File discovery
         scan_result = scan_folder(
@@ -321,7 +323,7 @@ class PipelineWorker(QThread):
                     db.update_doc_score(image_id, doc_score)
 
             else:
-                db.update_status(image_id, "error", error="decode failed")
+                db.mark_image_error(image_id, "decode failed")
                 summary["errors"] += 1
 
             done += 1
@@ -423,9 +425,9 @@ class PipelineWorker(QThread):
 
                     try:
                         result = future.result(timeout=120)  # 2 min timeout per image
-                    except Exception:
-                        # Worker crashed — mark as no-faces and continue
-                        db.mark_no_faces(row["id"])
+                    except Exception as exc:
+                        # Worker crashed — record a retryable error and continue
+                        db.mark_image_error(row["id"], f"detect failed: {exc!r}")
                         summary["errors"] += 1
                         done += 1
                         self.progress.emit(
@@ -438,7 +440,7 @@ class PipelineWorker(QThread):
 
                     if result is None:
                         # Image couldn't be decoded
-                        db.mark_no_faces(image_id)
+                        db.mark_image_error(image_id, "decode failed during detection")
                         summary["errors"] += 1
                     elif len(result) == 0:
                         # No faces found in this image
@@ -528,7 +530,7 @@ class PipelineWorker(QThread):
             image = _read_image_safe(image_path)
 
             if image is None:
-                db.mark_no_faces(image_id)
+                db.mark_image_error(image_id, "decode failed during detection")
                 summary["errors"] += 1
                 done += 1
                 self.progress.emit(
