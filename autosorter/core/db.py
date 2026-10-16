@@ -1326,6 +1326,109 @@ class Database:
         cursor = self._conn.execute("SELECT path FROM images")
         return {row["path"] for row in cursor.fetchall()}
 
+    # ------------------------------------------------------------------
+    # Clustering support (used by graph_cluster.run_graph_clustering)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _id_list(ids) -> str:
+        """Safe inline list of integer ids for IN (...) clauses ('NULL' when empty)."""
+        return ",".join(str(int(i)) for i in ids) or "-1"
+
+    def get_protected_person_ids(self) -> set:
+        """Persons clustering must never delete: user-named, or holding a user-assigned face."""
+        rows = self._conn.execute(
+            """
+            SELECT id FROM persons WHERE name_is_user_set = 1
+            UNION
+            SELECT DISTINCT person_id FROM faces
+            WHERE assign_source = 'user' AND person_id IN (SELECT id FROM persons)
+            """
+        ).fetchall()
+        return {r["id"] for r in rows}
+
+    def get_locked_face_ids(self, protected_person_ids) -> set:
+        """Faces clustering must not touch: user-assigned, or inside a protected person."""
+        rows = self._conn.execute(
+            "SELECT id FROM faces WHERE assign_source = 'user' "
+            f"OR person_id IN ({self._id_list(protected_person_ids)})"
+        ).fetchall()
+        return {r["id"] for r in rows}
+
+    def get_clusterable_faces(self) -> list:
+        """All real faces that have an embedding."""
+        return self._conn.execute(
+            """
+            SELECT id, image_id, embedding, quality, det_score, person_id, assign_source
+            FROM faces
+            WHERE embedding IS NOT NULL AND det_score > 0
+            ORDER BY id ASC
+            """
+        ).fetchall()
+
+    def get_person_face_embeddings(self, person_id: int) -> list:
+        """(image_id, embedding) rows for a person's real faces."""
+        return self._conn.execute(
+            "SELECT image_id, embedding FROM faces "
+            "WHERE person_id = ? AND embedding IS NOT NULL AND det_score > 0",
+            (person_id,),
+        ).fetchall()
+
+    def delete_persons_except(self, keep_person_ids) -> None:
+        self._conn.execute(
+            f"DELETE FROM persons WHERE id NOT IN ({self._id_list(keep_person_ids)})"
+        )
+        self._commit()
+
+    def reset_faces_to_auto(self, face_ids) -> None:
+        """Clear person assignment for the given faces (chunked)."""
+        face_ids = [int(i) for i in face_ids]
+        for start in range(0, len(face_ids), 500):
+            chunk = face_ids[start:start + 500]
+            marks = ",".join("?" * len(chunk))
+            self._conn.execute(
+                "UPDATE faces SET person_id = NULL, assign_source = 'auto', assign_conf = 0.0 "
+                f"WHERE id IN ({marks})",
+                chunk,
+            )
+        self._commit()
+
+    def assign_faces_auto(self, face_ids, person_id: int, confidence: float = 1.0) -> None:
+        """Auto-assign many faces to one person (chunked)."""
+        face_ids = [int(i) for i in face_ids]
+        for start in range(0, len(face_ids), 500):
+            chunk = face_ids[start:start + 500]
+            marks = ",".join("?" * len(chunk))
+            self._conn.execute(
+                "UPDATE faces SET person_id = ?, assign_source = 'auto', assign_conf = ? "
+                f"WHERE id IN ({marks})",
+                [person_id, confidence] + chunk,
+            )
+        self._commit()
+
+    def refresh_person_face_counts(self, person_ids) -> None:
+        self._conn.execute(
+            "UPDATE persons SET face_count = (SELECT COUNT(*) FROM faces "
+            "WHERE faces.person_id = persons.id AND faces.det_score > 0) "
+            f"WHERE id IN ({self._id_list(person_ids)})"
+        )
+        self._commit()
+
+    def clear_orphaned_person_ids(self) -> None:
+        """Unassign faces whose person row no longer exists."""
+        self._conn.execute(
+            "UPDATE faces SET person_id = NULL "
+            "WHERE person_id IS NOT NULL AND person_id NOT IN (SELECT id FROM persons)"
+        )
+        self._commit()
+
+    def get_image_by_id(self, image_id: int):
+        return self._conn.execute("SELECT * FROM images WHERE id = ?", (image_id,)).fetchone()
+
+    def set_image_sha256(self, image_id: int, sha256: str) -> None:
+        self._conn.execute("UPDATE images SET sha256 = ? WHERE id = ?", (sha256, image_id))
+        self._commit()
+
     def get_pipeline_state(self) -> dict:
         """
         Return a summary of the library state for the UI.

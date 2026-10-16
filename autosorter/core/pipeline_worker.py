@@ -254,17 +254,9 @@ class PipelineWorker(QThread):
             if sha256:
                 reattached_id = db.reattach_by_hash(sha256, image_path)
                 if reattached_id is not None:
-                    # This file was already processed under a different path!
-                    # Remove the duplicate pending row (the new path)
-                    # The old row has been updated to point to the new path.
-                    # Delete the pending row that was just created.
-                    existing = db.get_image_by_path(image_path)
-                    if existing and existing["id"] != reattached_id:
-                        db._conn.execute(
-                            "DELETE FROM images WHERE id = ?",
-                            (existing["id"],),
-                        )
-                        db._conn.commit()
+                    # The file was already processed under another path.
+                    # reattach_by_hash() moved that row to the new path and
+                    # already removed the duplicate pending row.
                     summary["files_reattached"] += 1
                     done += 1
                     self.progress.emit(
@@ -282,10 +274,7 @@ class PipelineWorker(QThread):
 
                 # Store the SHA-256 hash for future moved-file detection
                 if sha256:
-                    db._conn.execute(
-                        "UPDATE images SET sha256 = ? WHERE id = ?",
-                        (sha256, image_id),
-                    )
+                    db.set_image_sha256(image_id, sha256)
 
                 db.update_status(image_id, "processed")
 
@@ -473,13 +462,7 @@ class PipelineWorker(QThread):
         have embeddings but no person assignment yet.
         """
         # Clean up any orphaned face references (pointing to non-existent persons)
-        db._conn.execute("""
-            UPDATE faces
-            SET person_id = NULL
-            WHERE person_id IS NOT NULL
-              AND person_id NOT IN (SELECT id FROM persons)
-        """)
-        db._conn.commit()
+        db.clear_orphaned_person_ids()
 
         total = db.count_unassigned_faces()
         if total == 0:

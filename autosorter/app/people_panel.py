@@ -548,9 +548,7 @@ class PersonDetailPanel(QWidget):
             db.close()
             return
 
-        img_row = db._conn.execute(
-            "SELECT * FROM images WHERE id = ?", (face["image_id"],)
-        ).fetchone()
+        img_row = db.get_image_by_id(face["image_id"])
         if not img_row:
             db.close()
             return
