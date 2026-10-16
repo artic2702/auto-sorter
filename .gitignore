@@ -29,3 +29,7 @@ library.db-*
 .idea/
 Thumbs.db
 desktop.ini
+
+# Study & Notes
+docs/fullstudyofproject/
+Auto-Sorter-Obsidian-Vault/
