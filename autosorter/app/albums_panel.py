@@ -680,7 +680,7 @@ class AlbumsPanel(QWidget):
             QMessageBox.information(self, title, "No items in this album.")
             return
 
-        # Open the album detail view as a modal dialog
+        # Open as non-modal so PhotoViewer can appear on top
         dialog = AlbumDetailView(
             title=title,
             items=items,
@@ -688,7 +688,15 @@ class AlbumsPanel(QWidget):
             is_face_album=is_face,
             parent=self,
         )
-        dialog.exec()
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        dialog.show()
+        # Store reference so it's not garbage-collected
+        if not hasattr(self, '_open_dialogs'):
+            self._open_dialogs = []
+        self._open_dialogs.append(dialog)
+        dialog.finished.connect(lambda _, d=dialog: (
+            self._open_dialogs.remove(d) if d in self._open_dialogs else None
+        ))
 
     # ──────────────────────────────────────────────────────────────────
     # Export
