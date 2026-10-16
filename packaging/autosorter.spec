@@ -51,6 +51,7 @@ hiddenimports = [
     "autosorter.app.photo_viewer",
     "autosorter.app.similar_panel",
     "autosorter.app.albums_panel",
+    "autosorter.app.photo_grid",
 ]
 
 excludes = [

@@ -42,18 +42,15 @@ M6 replaces them with:
 
 from pathlib import Path
 
-from PySide6.QtCore import QThread, Qt
-from PySide6.QtGui import QPixmap
+from PySide6.QtCore import QThread
 from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
-    QGridLayout,
     QHBoxLayout,
     QLabel,
     QMainWindow,
     QProgressBar,
     QPushButton,
-    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
@@ -65,68 +62,7 @@ from autosorter.core.pipeline_worker import PipelineWorker
 from autosorter.app.photo_viewer import PhotoViewer
 from autosorter.app.people_panel import PeoplePanel
 from autosorter.app.albums_panel import AlbumsPanel
-
-
-# Thumbnail display size in the grid (pixels)
-GRID_THUMB_SIZE = 120
-
-
-class ClickableThumb(QLabel):
-    """
-    A clickable thumbnail label.
-
-    QLabel doesn't have a clicked signal by default, so we override
-    mousePressEvent to detect clicks. When clicked, it opens the
-    PhotoViewer for this image.
-
-    WHY NOT USE QPushButton?
-    QPushButton can display an icon, but it adds button styling (borders,
-    hover effects) that makes the grid look ugly. A plain QLabel with a
-    pixmap looks cleaner — like a real photo grid.
-    """
-
-    def __init__(self, image_row, parent_window, parent=None):
-        super().__init__(parent)
-        self._image_row = image_row
-        self._parent_window = parent_window
-        self.setCursor(Qt.CursorShape.PointingHandCursor)  # hand cursor on hover
-        self.setFixedSize(GRID_THUMB_SIZE, GRID_THUMB_SIZE)
-        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.setStyleSheet(
-            "border: 2px solid transparent; border-radius: 4px;"
-        )
-
-        # Load and display the thumbnail
-        if image_row["thumb_path"]:
-            pixmap = QPixmap(image_row["thumb_path"])
-            if not pixmap.isNull():
-                scaled = pixmap.scaled(
-                    GRID_THUMB_SIZE - 4, GRID_THUMB_SIZE - 4,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
-                self.setPixmap(scaled)
-            else:
-                self.setText("❌")
-        else:
-            self.setText("❌")
-
-    def enterEvent(self, event):
-        """Mouse enters the thumbnail — show a highlight border."""
-        self.setStyleSheet(
-            "border: 2px solid #4CAF50; border-radius: 4px;"
-        )
-
-    def leaveEvent(self, event):
-        """Mouse leaves — remove highlight."""
-        self.setStyleSheet(
-            "border: 2px solid transparent; border-radius: 4px;"
-        )
-
-    def mousePressEvent(self, event):
-        """Click → open the PhotoViewer for this image."""
-        if event.button() == Qt.MouseButton.LeftButton:
-            self._parent_window._open_photo_viewer(self._image_row)
+from autosorter.app.photo_grid import PhotoGridModel, PhotoGridView, GRID_THUMB_SIZE
 
 
 class MainWindow(QMainWindow):
@@ -271,16 +207,11 @@ class MainWindow(QMainWindow):
         albums_layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self._albums_container)
 
-        # --- Thumbnail grid (inside a scroll area) ---
-        self._grid_scroll = QScrollArea()
-        self._grid_scroll.setWidgetResizable(True)
-        self._grid_scroll.setVisible(False)
-
-        self._grid_container = QWidget()
-        self._grid_layout = QGridLayout(self._grid_container)
-        self._grid_layout.setSpacing(6)
-        self._grid_scroll.setWidget(self._grid_container)
-        layout.addWidget(self._grid_scroll, stretch=1)
+        # --- Virtualized Thumbnail Grid ---
+        self._photo_grid = PhotoGridView(thumb_size=GRID_THUMB_SIZE)
+        self._photo_grid.setVisible(False)
+        self._photo_grid.photo_activated.connect(self._open_photo_viewer)
+        layout.addWidget(self._photo_grid, stretch=1)
 
         # Spacer (only used when grid is hidden)
         self._spacer_label = QLabel("")
@@ -563,15 +494,12 @@ class MainWindow(QMainWindow):
         self._pipeline_worker = None
 
     # ==================================================================
-    # Thumbnail Grid (M2)
+    # Thumbnail Grid (M2 / M8 Virtualized)
     # ==================================================================
 
     def _load_thumbnail_grid(self) -> None:
         """
-        Load all scanned image thumbnails into a clickable grid.
-
-        We read the database for all processed images, then create
-        ClickableThumb widgets for each one, arranged in a grid layout.
+        Load all scanned image thumbnails into a virtualized grid.
         """
         if self._data_folder is None:
             return
@@ -587,24 +515,10 @@ class MainWindow(QMainWindow):
         if not images:
             return
 
-        # Clear existing grid
-        while self._grid_layout.count():
-            item = self._grid_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-
-        # Calculate how many columns fit in the window
-        cols = max(1, (self.width() - 60) // (GRID_THUMB_SIZE + 6))
-
-        # Add thumbnails to the grid
-        for i, img_row in enumerate(images):
-            thumb = ClickableThumb(img_row, self)
-            row = i // cols
-            col = i % cols
-            self._grid_layout.addWidget(thumb, row, col)
+        self._photo_grid.setModel(PhotoGridModel(images, GRID_THUMB_SIZE))
 
         # Show the grid, hide the spacer
-        self._grid_scroll.setVisible(True)
+        self._photo_grid.setVisible(True)
         self._spacer_label.setVisible(False)
 
     # ==================================================================
