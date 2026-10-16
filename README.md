@@ -44,7 +44,6 @@ python -m pytest
 
 ## Documentation
 
-- [Project Roadmap & Plan](PLAN.md)
 - [Learning Guides Overview](docs/learning/README.md)
   - [M0 — Scaffold](docs/learning/M0_scaffold.md)
   - [M1 — Scan & Database](docs/learning/M1_scan_and_database.md)
@@ -54,7 +53,6 @@ python -m pytest
   - [M5 — Corrections](docs/learning/M5_corrections.md)
   - [M6 — Resume & Incremental](docs/learning/M6_resume_incremental.md)
   - [M7 — Albums & Safe Export](docs/learning/M7_albums_and_export.md)
-- [Challenges We Faced & Solutions](docs/challenges_we_faced/README.md)
 
 ## License
 
