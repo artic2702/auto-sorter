@@ -899,13 +899,10 @@ class Database:
             yield row
 
     def get_next_person_number(self) -> int:
-        """
-        Get the next person number for auto-naming ("Person N").
-
-        Returns the count of existing persons + 1, so names are sequential.
-        """
-        cursor = self._conn.execute("SELECT COUNT(*) FROM persons")
-        return cursor.fetchone()[0] + 1
+        row = self._conn.execute(
+            "SELECT seq FROM sqlite_sequence WHERE name = 'persons'"
+        ).fetchone()
+        return (row["seq"] if row else 0) + 1
 
     def update_person_cover(self, person_id: int, face_id: int) -> None:
         """

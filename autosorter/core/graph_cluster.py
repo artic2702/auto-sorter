@@ -533,22 +533,23 @@ def run_graph_clustering(
         config = GraphClusterConfig()
 
     # Step 1: Query user-named persons to preserve them from automated reclustering
-    user_named_rows = db._conn.execute(
-        "SELECT id, display_name FROM persons WHERE name_is_user_set = 1"
-    ).fetchall()
-    protected_pids = {row["id"] for row in user_named_rows}
-
-    # Step 2: Query faces explicitly assigned by the user to protect their manual corrections
-    locked_faces = set()
-    if protected_pids:
-        placeholders = ",".join("?" * len(protected_pids))
-        locked_rows = db._conn.execute(
-            f"SELECT id FROM faces WHERE person_id IN ({placeholders}) AND assign_source = 'user'",
-            list(protected_pids),
+    protected_pids = {
+        r["id"] for r in db._conn.execute(
+            """
+            SELECT id FROM persons WHERE name_is_user_set = 1
+            UNION
+            SELECT DISTINCT person_id FROM faces
+            WHERE assign_source = 'user' AND person_id IN (SELECT id FROM persons)
+            """
         ).fetchall()
-        locked_faces = {row["id"] for row in locked_rows}
+    }
+    keep_sql = ",".join(str(int(x)) for x in protected_pids) or "-1"
+    locked_faces = {
+        r["id"] for r in db._conn.execute(
+            f"SELECT id FROM faces WHERE assign_source = 'user' OR person_id IN ({keep_sql})"
+        ).fetchall()
+    }
 
-    # Step 3: Fetch all valid faces with computed embeddings
     cursor = db._conn.execute("""
         SELECT id, image_id, embedding, quality, det_score, person_id, assign_source
         FROM faces
@@ -688,11 +689,8 @@ def run_graph_clustering(
         return report
 
     # Step 11: Atomic SQLite Transactional Commit
-    with db._conn:
-        # Delete auto-created persons (preserving user-named persons)
-        db._conn.execute("DELETE FROM persons WHERE name_is_user_set = 0")
-
-        # Unassign faces in the clustering pool
+    with db.transaction():
+        db._conn.execute(f"DELETE FROM persons WHERE id NOT IN ({keep_sql})")
         face_id_list = face_ids.tolist()
         for start in range(0, len(face_id_list), 500):
             chunk = face_id_list[start:start + 500]
@@ -702,35 +700,80 @@ def run_graph_clustering(
                 chunk,
             )
 
-        # Create new person records and batch-assign member faces
+        prot = {}
+        for pid in protected_pids:
+            rows_p = db._conn.execute(
+                "SELECT image_id, embedding FROM faces WHERE person_id = ? AND embedding IS NOT NULL AND det_score > 0",
+                (pid,),
+            ).fetchall()
+            if rows_p:
+                m = np.stack([FaceRecognizer.bytes_to_embedding(r["embedding"]) for r in rows_p]).mean(axis=0)
+                m /= (np.linalg.norm(m) or 1.0)
+                prot[pid] = (m, {r["image_id"] for r in rows_p})
+        touched = set()
+
         for pid_idx, members in final_person_to_faces.items():
             member_face_ids = face_ids[members].tolist()
-
-            # Compute cluster centroid
             c_embs = embeddings[members]
             centroid = c_embs.mean(axis=0)
             norm = np.linalg.norm(centroid)
             centroid /= (norm if norm > 1e-9 else 1.0)
-            centroid_bytes = FaceRecognizer.embedding_to_bytes(centroid)
+            cluster_imgs = {int(image_ids[i]) for i in members}
 
-            # Insert person record
-            person_number = db.get_next_person_number()
-            display_name = f"Person {person_number}"
-            new_person_id = db.insert_person(
-                display_name=display_name,
-                centroid_bytes=centroid_bytes,
-                face_count=len(members),
-                cover_face_id=int(member_face_ids[0]),
-            )
+            best_pid, best_sim = None, config.t_consolidate
+            for pid, (pc, pimgs) in prot.items():
+                sim = float(centroid @ pc)
+                if sim >= best_sim and not (cluster_imgs & pimgs):
+                    best_pid, best_sim = pid, sim
 
-            # Assign all member faces to the new person in chunks
+            if best_pid is not None:
+                target = best_pid
+                touched.add(target)
+            else:
+                person_number = db.get_next_person_number()
+                target = db.insert_person(
+                    display_name=f"Person {person_number}",
+                    centroid_bytes=FaceRecognizer.embedding_to_bytes(centroid),
+                    face_count=len(members),
+                    cover_face_id=int(member_face_ids[0]),
+                )
             for start in range(0, len(member_face_ids), 500):
                 chunk = member_face_ids[start:start + 500]
                 placeholders = ",".join("?" * len(chunk))
                 db._conn.execute(
                     f"UPDATE faces SET person_id = ?, assign_source = 'auto', assign_conf = 1.0 WHERE id IN ({placeholders})",
-                    [new_person_id] + chunk,
+                    [target] + chunk,
                 )
+
+        # Attach leftover (unknown/evicted) faces to protected persons when clearly closest.
+        for idx in unknown_indices:
+            if not prot:
+                break
+            img = int(image_ids[idx])
+            sims = sorted(
+                ((float(embeddings[idx] @ pc), pid) for pid, (pc, pimgs) in prot.items()
+                 if img not in pimgs),
+                reverse=True,
+            )
+            if not sims or sims[0][0] < config.min_support:
+                continue
+            if len(sims) > 1 and sims[0][0] - sims[1][0] < config.min_margin:
+                continue
+            sim, pid = sims[0]
+            db._conn.execute(
+                "UPDATE faces SET person_id = ?, assign_source = 'auto', assign_conf = ? WHERE id = ?",
+                (pid, sim, int(face_ids[idx])),
+            )
+            prot[pid][1].add(img)
+            touched.add(pid)
+
+        for pid in touched:
+            db.recompute_person_centroid(pid)
+        for pid in protected_pids:
+            db._conn.execute(
+                "UPDATE persons SET face_count = (SELECT COUNT(*) FROM faces WHERE person_id = ? AND det_score > 0) WHERE id = ?",
+                (pid, pid),
+            )
 
         # Update cover faces for all persons to the highest quality photo
         from autosorter.core.cluster import pick_cover_faces
