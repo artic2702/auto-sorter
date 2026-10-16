@@ -3,20 +3,17 @@ Performance utilities for Auto-Sorter.
 
 === WHAT IS THIS FILE? (M8) ===
 This module provides low-level performance controls:
-1. Process priority — set below-normal so the PC stays usable during scans
+1. Thread priority — set below-normal so worker threads yield to the UI thread
 2. RSS monitoring — track memory usage to enforce the 1.5 GB cap
 3. Worker count — calculate thread counts for the speed dial
 4. Batch commit — reduce SQLite I/O by batching writes
 
-=== WHY BELOW-NORMAL PRIORITY? ===
-When running face detection on 20,000+ photos, the CPU can be maxed out
-for hours. At normal priority, this makes the PC sluggish — browser tabs
-lag, typing has delay, even the mouse can stutter.
-
-Setting BELOW_NORMAL_PRIORITY_CLASS means our process only gets CPU time
-that no other process wants. The scan runs at full speed when the PC is
-idle, but instantly yields when the user opens Chrome or types in Word.
-This is exactly how Apple Photos works during its background analysis.
+=== WHY BELOW-NORMAL THREAD PRIORITY? ===
+When running face detection on 20,000+ photos, worker threads can max out CPU
+cores. Instead of lowering process-wide priority (which would slow down our own
+UI thread), we lower the priority of the background worker threads.
+Worker threads run at full speed when idle, but yield immediately to the UI
+thread and other interactive applications.
 
 === WHY RSS MONITORING? ===
 The plan guarantees RAM < 1.5 GB. Without monitoring, a 4-worker thread
@@ -83,66 +80,29 @@ def worker_count_for_mode(mode: SpeedMode) -> int:
 
 
 # ══════════════════════════════════════════════════════════════════════
-# Process Priority
+# Thread Priority (per-thread)
 # ══════════════════════════════════════════════════════════════════════
 
-# Windows priority class constants (from winbase.h)
-_BELOW_NORMAL_PRIORITY_CLASS = 0x00004000
-_NORMAL_PRIORITY_CLASS = 0x00000020
+def set_current_thread_below_normal() -> bool:
+    """Lower the priority of the CALLING thread only (Windows). No-op elsewhere.
 
-
-def set_below_normal_priority() -> bool:
+    Used as the ThreadPoolExecutor initializer so decoding/detection threads yield
+    to the UI thread, which keeps normal priority.
     """
-    Set the current process to below-normal priority.
-
-    On Windows, this uses SetPriorityClass with BELOW_NORMAL_PRIORITY_CLASS.
-    On other platforms, this tries os.nice(10) (Unix-like systems).
-
-    Returns True if the priority was successfully changed.
-    """
+    if sys.platform != "win32":
+        return False
     try:
-        if sys.platform == "win32":
-            import ctypes
-            kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
-            kernel32.GetCurrentProcess.restype = ctypes.c_void_p
-            kernel32.SetPriorityClass.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
-            handle = kernel32.GetCurrentProcess()
-            result = kernel32.SetPriorityClass(handle, _BELOW_NORMAL_PRIORITY_CLASS)
-            return bool(result)
-        else:
-            # Unix/macOS: nice(10) lowers priority (higher nice = lower priority)
-            os.nice(10)
-            return True
-    except (OSError, AttributeError, ImportError):
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        kernel32.GetCurrentThread.restype = ctypes.c_void_p
+        kernel32.SetThreadPriority.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        THREAD_PRIORITY_BELOW_NORMAL = -1
+        return bool(kernel32.SetThreadPriority(kernel32.GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL))
+    except (OSError, AttributeError):
         return False
 
 
-def restore_normal_priority() -> bool:
-    """
-    Restore the current process to normal priority.
-
-    Called when the pipeline finishes so interactive use isn't affected.
-    """
-    try:
-        if sys.platform == "win32":
-            import ctypes
-            kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
-            kernel32.GetCurrentProcess.restype = ctypes.c_void_p
-            kernel32.SetPriorityClass.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
-            handle = kernel32.GetCurrentProcess()
-            result = kernel32.SetPriorityClass(handle, _NORMAL_PRIORITY_CLASS)
-            return bool(result)
-        # On Unix, you can't un-nice a process without root, so we skip
-        return True
-    except (OSError, AttributeError, ImportError):
-        return False
-
-
-# ══════════════════════════════════════════════════════════════════════
-# Memory Monitoring
-# ══════════════════════════════════════════════════════════════════════
-
-# Soft memory limit in bytes (1.2 GB — leaves headroom before the 1.5 GB cap)
 MEMORY_SOFT_LIMIT = int(1.2 * 1024 * 1024 * 1024)
 
 # Hard memory limit (1.5 GB — absolute cap)

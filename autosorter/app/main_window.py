@@ -42,7 +42,7 @@ M6 replaces them with:
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QThread, Qt
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QComboBox,
@@ -413,7 +413,7 @@ class MainWindow(QMainWindow):
         )
         self._pipeline_worker.stage_changed.connect(self._on_stage_changed)
         self._pipeline_worker.progress.connect(self._on_pipeline_progress)
-        self._pipeline_worker.finished.connect(self._on_pipeline_finished)
+        self._pipeline_worker.pipeline_finished.connect(self._on_pipeline_finished)
         self._pipeline_worker.error.connect(self._on_error)
 
         self._start_btn.setEnabled(False)
@@ -431,7 +431,7 @@ class MainWindow(QMainWindow):
             "color: gray; border-top: 1px solid #ddd; padding-top: 8px;"
         )
 
-        self._pipeline_worker.start()
+        self._pipeline_worker.start(QThread.Priority.LowPriority)
 
     def _cancel_pipeline(self) -> None:
         """Cancel the running pipeline."""

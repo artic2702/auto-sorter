@@ -675,6 +675,40 @@ class Database:
     # Embedding operations (M3)
     # ------------------------------------------------------------------
 
+    def set_face_thumb(self, face_id: int, thumb_path: str) -> None:
+        """Store the aligned-crop thumbnail path for a face."""
+        self._conn.execute(
+            "UPDATE faces SET thumb_path = ? WHERE id = ?", (thumb_path, face_id)
+        )
+        self._commit()
+
+    def get_meta(self, key: str) -> Optional[str]:
+        row = self._conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+        return row["value"] if row else None
+
+    def set_meta(self, key: str, value: str) -> None:
+        self._conn.execute(
+            "INSERT INTO meta (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )
+        self._commit()
+
+    def get_images_for_doc_rescoring(self) -> list:
+        """Processed images whose detection already ran, with their real face counts."""
+        return self._conn.execute(
+            """
+            SELECT i.id, i.path, i.thumb_path, i.width, i.height,
+                   (SELECT COUNT(*) FROM faces f
+                     WHERE f.image_id = i.id AND f.det_score > 0) AS face_count
+            FROM images i
+            WHERE i.status = 'processed'
+              AND i.thumb_path IS NOT NULL
+              AND EXISTS (SELECT 1 FROM faces f WHERE f.image_id = i.id)
+            ORDER BY i.id
+            """
+        ).fetchall()
+
     def update_embedding(self, face_id: int, embedding_bytes: bytes) -> None:
         """
         Store a faceprint (embedding) for a detected face.

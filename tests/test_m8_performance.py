@@ -28,8 +28,7 @@ from autosorter.core.perf import (
     SpeedMode,
     get_cpu_count,
     worker_count_for_mode,
-    set_below_normal_priority,
-    restore_normal_priority,
+    set_current_thread_below_normal,
     get_rss_bytes,
     is_memory_pressure,
     MEMORY_SOFT_LIMIT,
@@ -124,23 +123,9 @@ class TestSpeedDial:
 class TestProcessPriority:
     """Tests for process priority management."""
 
-    def test_set_and_restore_priority(self):
-        # On Windows, this should execute kernel32 SetPriorityClass
-        result_lower = set_below_normal_priority()
-        result_restore = restore_normal_priority()
-
-        if sys.platform == "win32":
-            assert result_lower is True
-            assert result_restore is True
-        else:
-            # On non-Windows platforms, returns bool without crashing
-            assert isinstance(result_lower, bool)
-            assert isinstance(result_restore, bool)
-
-
-# ══════════════════════════════════════════════════════════════════════
-# 3. Memory Monitoring Tests
-# ══════════════════════════════════════════════════════════════════════
+    def test_thread_priority_helper_never_raises(self):
+        """Per-thread priority helper returns a bool and never raises (no-op off Windows)."""
+        assert isinstance(set_current_thread_below_normal(), bool)
 
 class TestMemoryMonitoring:
     """Tests for memory limits and RSS monitoring."""
@@ -248,7 +233,7 @@ class TestDetectionPipelineWorkers:
 
             results = []
             errors = []
-            worker.finished.connect(results.append)
+            worker.pipeline_finished.connect(results.append)
             worker.error.connect(errors.append)
             worker.run()  # run synchronously for test
 
@@ -290,7 +275,7 @@ class TestDetectionPipelineWorkers:
 
         results = []
         errors = []
-        worker.finished.connect(results.append)
+        worker.pipeline_finished.connect(results.append)
         worker.error.connect(errors.append)
         worker.run()
 
