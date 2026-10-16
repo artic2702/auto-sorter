@@ -196,7 +196,17 @@ CREATE TABLE IF NOT EXISTS persons (
 # Current schema version. Bumped to "3" because we added the persons table (M4).
 # On existing databases, the CREATE TABLE IF NOT EXISTS handles the upgrade
 # gracefully — it only creates the table if it doesn't exist yet.
-_SCHEMA_VERSION = "3"
+_SCHEMA_VERSION = "3"  # legacy meta value, kept for old tests/DBs
+
+# PRAGMA user_version is the real schema version. 1 == the baseline _SCHEMA above.
+# Each entry upgrades from (index+1) -> (index+2). Never edit a shipped migration; append a new one.
+def _m2_images_error_count(conn: sqlite3.Connection) -> None:
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(images)")}
+    if "error_count" not in cols:
+        conn.execute("ALTER TABLE images ADD COLUMN error_count INTEGER NOT NULL DEFAULT 0")
+
+_MIGRATIONS = [_m2_images_error_count]          # -> version 2
+_LATEST_SCHEMA = 1 + len(_MIGRATIONS)
 
 
 class Database:
@@ -260,7 +270,18 @@ class Database:
             "INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?)",
             ("schema_version", _SCHEMA_VERSION),
         )
-        self._conn.commit()  # Save everything to disk right now.
+        self._conn.commit()
+        self._migrate()
+
+    def _migrate(self) -> None:
+        version = self._conn.execute("PRAGMA user_version").fetchone()[0] or 1
+        for target in range(version + 1, _LATEST_SCHEMA + 1):
+            _MIGRATIONS[target - 2](self._conn)
+            self._conn.execute(f"PRAGMA user_version = {target}")
+            self._conn.commit()
+        if version == 1 and self._conn.execute("PRAGMA user_version").fetchone()[0] == 0:
+            self._conn.execute("PRAGMA user_version = 1")
+            self._conn.commit()
 
     def _commit(self) -> None:
         """Commit unless inside a transaction() block (the block commits at exit)."""
@@ -335,14 +356,18 @@ class Database:
                 size   = excluded.size,
                 mtime  = excluded.mtime,
                 status = excluded.status,
-                error  = excluded.error
+                error  = excluded.error,
+                error_count = 0
             """,
             (path, size, mtime, sha256, width, height, taken_at,
              thumb_path, status, error),
         )
         self._commit()
-        # lastrowid gives us the auto-generated ID of the row we just wrote.
-        return cursor.lastrowid  # type: ignore[return-value]
+        # lastrowid is unreliable after ON CONFLICT ... DO UPDATE, so look the id up.
+        return self._conn.execute(
+            "SELECT id FROM images WHERE path = ?", (path,)
+        ).fetchone()["id"]
+
 
     def get_image_by_path(self, path: str) -> Optional[sqlite3.Row]:
         """
@@ -440,10 +465,32 @@ class Database:
         """
         Store the thumbnail path and image dimensions after generating a thumbnail.
         """
+        old = self._conn.execute(
+            "SELECT width, height FROM images WHERE id = ?", (image_id,)
+        ).fetchone()
+        dims_changed = (
+            old is not None
+            and old["width"] is not None
+            and old["height"] is not None
+            and (old["width"], old["height"]) != (width, height)
+        )
+        affected = set()
+        if dims_changed:
+            # Crop/rotate/resize: stored face boxes no longer match the pixels.
+            affected = {
+                r[0] for r in self._conn.execute(
+                    "SELECT DISTINCT person_id FROM faces "
+                    "WHERE image_id = ? AND person_id IS NOT NULL",
+                    (image_id,),
+                )
+            }
+            self._conn.execute("DELETE FROM faces WHERE image_id = ?", (image_id,))
         self._conn.execute(
             "UPDATE images SET thumb_path = ?, width = ?, height = ? WHERE id = ?",
             (thumb_path, width, height, image_id),
         )
+        for pid in affected:
+            self.recompute_person_centroid(pid)
         self._commit()
 
     # ------------------------------------------------------------------
@@ -941,8 +988,16 @@ class Database:
         """
         faces = self.get_faces_for_person(person_id)
         if not faces:
-            # No faces left for this person -> clean up empty record
-            self._conn.execute("DELETE FROM persons WHERE id = ?", (person_id,))
+            person = self.get_person_by_id(person_id)
+            if person is not None and person["name_is_user_set"]:
+                # Never silently delete a person the user named.
+                self._conn.execute(
+                    "UPDATE persons SET centroid = NULL, face_count = 0, cover_face_id = NULL WHERE id = ?",
+                    (person_id,),
+                )
+            else:
+                # No faces left for this person -> clean up empty record
+                self._conn.execute("DELETE FROM persons WHERE id = ?", (person_id,))
             self._commit()
             return
 
