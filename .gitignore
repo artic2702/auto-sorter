@@ -1,16 +1,25 @@
-# Python
+# Python & Virtual Environments
 .venv/
 __pycache__/
 *.pyc
 *.egg-info/
+
+# Testing & Linting
 .pytest_cache/
+.ruff_cache/
+before.txt
+
+# Build & Packaging
 build/
 dist/
+*.spec.bak
 
-# App data (never commit user photo data)
+# App data (never commit user photo data or databases)
 appdata/
 .autosorter/
 **/.autosorter/
+library.db
+library.db-*
 *.db
 *.db-wal
 *.db-shm

@@ -12,5 +12,8 @@ dependencies = [
     "rawpy>=0.20",
 ]
 
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "ruff>=0.5"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
