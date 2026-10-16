@@ -55,12 +55,15 @@ This is why we normalize embeddings before storing them — it makes
 similarity computation a single numpy operation on the entire database.
 """
 
+import logging
 from typing import Optional
 
 import cv2
 import numpy as np
 
 from autosorter.paths import SFACE_MODEL
+
+log = logging.getLogger(__name__)
 
 
 class FaceRecognizer:
@@ -109,6 +112,7 @@ class FaceRecognizer:
             aligned = self._recognizer.alignCrop(image, raw_detection)
             return aligned
         except Exception:
+            log.warning("Failed to align crop face", exc_info=True)
             return None
 
     def compute(self, aligned_face: np.ndarray) -> Optional[np.ndarray]:

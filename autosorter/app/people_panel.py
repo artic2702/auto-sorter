@@ -17,6 +17,7 @@ People panel — displays person cards with face thumbnails, rename, merge, and 
 """
 
 from pathlib import Path
+import logging
 from typing import Optional
 
 from PySide6.QtCore import QSize, Qt, Signal
@@ -38,8 +39,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from autosorter.app.theme import STYLE_CARD_ICON_BTN
 from autosorter.core.db import Database
 
+log = logging.getLogger(__name__)
 
 # Size of face thumbnails on person cards
 CARD_FACE_SIZE = 110
@@ -704,6 +707,7 @@ class PersonDetailPanel(QWidget):
 
             QMessageBox.information(self, "📤 Export Complete", summary_text)
         except Exception as e:
+            log.exception("Failed to export photos of '%s'", name)
             QMessageBox.critical(
                 self, "Export Error", f"Failed to export photos of '{name}':\n\n{e}"
             )
@@ -806,14 +810,14 @@ class PersonCard(QWidget):
         self._merge_btn = QPushButton("🔗")
         self._merge_btn.setFixedSize(24, 24)
         self._merge_btn.setToolTip("Merge this person into another")
-        self._merge_btn.setStyleSheet("border: none; font-size: 14px; padding: 0; color: #aaa;")
+        self._merge_btn.setStyleSheet(STYLE_CARD_ICON_BTN)
         self._merge_btn.clicked.connect(self._on_merge_clicked)
         bottom_row.addWidget(self._merge_btn)
 
         self._rename_btn = QPushButton("✏️")
         self._rename_btn.setFixedSize(24, 24)
         self._rename_btn.setToolTip("Rename this person")
-        self._rename_btn.setStyleSheet("border: none; font-size: 14px; padding: 0; color: #aaa;")
+        self._rename_btn.setStyleSheet(STYLE_CARD_ICON_BTN)
         self._rename_btn.clicked.connect(self._start_rename)
         bottom_row.addWidget(self._rename_btn)
 

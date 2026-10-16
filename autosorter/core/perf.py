@@ -22,9 +22,12 @@ periodically and apply backpressure (pause the producer queue) if it
 exceeds our soft limit.
 """
 
+from enum import Enum
+import logging
 import os
 import sys
-from enum import Enum
+
+log = logging.getLogger(__name__)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -169,6 +172,7 @@ def get_rss_bytes() -> int:
             return usage.ru_maxrss * 1024  # KB on Linux
 
     except Exception:
+        log.warning("Failed to determine process RSS memory", exc_info=True)
         return 0
 
 

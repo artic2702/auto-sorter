@@ -40,6 +40,7 @@ M6 replaces them with:
 └─────────────────────────────────────────────────────┘
 """
 
+import logging
 from pathlib import Path
 
 from PySide6.QtCore import QThread
@@ -56,13 +57,17 @@ from PySide6.QtWidgets import (
 )
 
 from autosorter import __version__
+from autosorter.app.albums_panel import AlbumsPanel
+from autosorter.app.people_panel import PeoplePanel
+from autosorter.app.photo_grid import GRID_THUMB_SIZE, PhotoGridModel, PhotoGridView
+from autosorter.app.photo_viewer import PhotoViewer
+from autosorter.app.theme import STYLE_HINT_LABEL, STYLE_MUTED_LABEL, STYLE_STATUS_BAR
 from autosorter.core.db import Database
 from autosorter.core.perf import SpeedMode
 from autosorter.core.pipeline_worker import PipelineWorker
-from autosorter.app.photo_viewer import PhotoViewer
-from autosorter.app.people_panel import PeoplePanel
-from autosorter.app.albums_panel import AlbumsPanel
-from autosorter.app.photo_grid import PhotoGridModel, PhotoGridView, GRID_THUMB_SIZE
+from autosorter.logging_setup import setup_logging
+
+log = logging.getLogger(__name__)
 
 
 class MainWindow(QMainWindow):
@@ -110,7 +115,7 @@ class MainWindow(QMainWindow):
         photo_row = QHBoxLayout()
         photo_row.addWidget(QLabel("📁 Photo folder:"))
         self._photo_path_label = QLabel("(not selected)")
-        self._photo_path_label.setStyleSheet("color: gray;")
+        self._photo_path_label.setStyleSheet(STYLE_MUTED_LABEL)
         photo_row.addWidget(self._photo_path_label, stretch=1)
         photo_browse = QPushButton("Browse…")
         photo_browse.setFixedWidth(90)
@@ -121,7 +126,7 @@ class MainWindow(QMainWindow):
         data_row = QHBoxLayout()
         data_row.addWidget(QLabel("📁 Data folder:"))
         self._data_path_label = QLabel("(auto — inside photo folder)")
-        self._data_path_label.setStyleSheet("color: gray;")
+        self._data_path_label.setStyleSheet(STYLE_MUTED_LABEL)
         data_row.addWidget(self._data_path_label, stretch=1)
         data_browse = QPushButton("Browse…")
         data_browse.setFixedWidth(90)
@@ -133,7 +138,7 @@ class MainWindow(QMainWindow):
 
         # --- Library state summary (M6) ---
         self._library_label = QLabel("")
-        self._library_label.setStyleSheet("font-size: 13px; color: #555;")
+        self._library_label.setStyleSheet(STYLE_HINT_LABEL)
         self._library_label.setVisible(False)
         layout.addWidget(self._library_label)
 
@@ -157,7 +162,7 @@ class MainWindow(QMainWindow):
 
         btn_row.addSpacing(16)
         speed_lbl = QLabel("Speed:")
-        speed_lbl.setStyleSheet("font-size: 13px; color: #555;")
+        speed_lbl.setStyleSheet(STYLE_HINT_LABEL)
         btn_row.addWidget(speed_lbl)
 
         self._speed_combo = QComboBox()
@@ -219,9 +224,7 @@ class MainWindow(QMainWindow):
 
         # --- Status bar ---
         self._status_label = QLabel("Ready — select a photo folder to begin.")
-        self._status_label.setStyleSheet(
-            "color: gray; border-top: 1px solid #ddd; padding-top: 8px;"
-        )
+        self._status_label.setStyleSheet(STYLE_STATUS_BAR)
         layout.addWidget(self._status_label)
 
     # ==================================================================
@@ -241,6 +244,7 @@ class MainWindow(QMainWindow):
                 self._data_folder = self._photo_folder / ".autosorter"
                 self._data_path_label.setText(str(self._data_folder))
 
+            setup_logging(self._data_folder)
             self._start_btn.setEnabled(True)
 
             # Show library state if DB already exists (M6: resume support)
@@ -254,6 +258,7 @@ class MainWindow(QMainWindow):
             self._data_folder = Path(folder)
             self._data_path_label.setText(folder)
             self._data_path_label.setStyleSheet("")
+            setup_logging(self._data_folder)
 
             # Update library summary with new data folder
             self._update_library_summary()
@@ -326,6 +331,7 @@ class MainWindow(QMainWindow):
                 self._show_albums_panel()
 
         except Exception:
+            log.exception("Failed to update library summary")
             self._library_label.setVisible(False)
             self._start_btn.setText("▶  Start")
 
@@ -337,6 +343,8 @@ class MainWindow(QMainWindow):
         """Launch the unified pipeline (scan → detect → embed → cluster)."""
         if self._photo_folder is None or self._data_folder is None:
             return
+
+        setup_logging(self._data_folder)
 
         speed_mode = self._speed_combo.currentData() or SpeedMode.NORMAL
         self._pipeline_worker = PipelineWorker(
@@ -358,9 +366,7 @@ class MainWindow(QMainWindow):
         self._stage_label.setText("Starting pipeline…")
         self._progress_label.setVisible(True)
         self._status_label.setText("Pipeline running…")
-        self._status_label.setStyleSheet(
-            "color: gray; border-top: 1px solid #ddd; padding-top: 8px;"
-        )
+        self._status_label.setStyleSheet(STYLE_STATUS_BAR)
 
         self._pipeline_worker.start(QThread.Priority.LowPriority)
 
@@ -476,6 +482,7 @@ class MainWindow(QMainWindow):
                 self._show_albums_panel()
 
         except Exception:
+            log.exception("Failed to update library summary after pipeline")
             pass
 
     def _on_error(self, message: str) -> None:

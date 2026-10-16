@@ -32,7 +32,7 @@ from autosorter.core.db import Database
 # It's immutable (can't be changed after creation) and lightweight.
 # We use it to return scan results in a clean, readable way:
 #   result = ScanResult(found=100, new=20, skipped=80, errors=0)
-#   print(result.new)  # 20
+#   log.info(result.new)  # 20
 class ScanResult(NamedTuple):
     found: int    # total image files found on disk
     new: int      # files that were added to the database

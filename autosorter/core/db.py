@@ -23,6 +23,7 @@ This is critical because our UI thread reads from the DB while the scanner write
 """
 
 import contextlib
+from enum import Enum
 import sqlite3
 from pathlib import Path
 from typing import Optional
@@ -30,6 +31,18 @@ from typing import Optional
 import numpy as np
 
 from autosorter.core.face_embed import FaceRecognizer
+
+
+class ImageStatus(str, Enum):
+    PENDING = "pending"
+    PROCESSED = "processed"
+    ERROR = "error"
+    MISSING = "missing"
+
+
+class AssignSource(str, Enum):
+    AUTO = "auto"
+    USER = "user"
 
 
 # The SQL statements that create our tables.
@@ -379,7 +392,7 @@ class Database:
         Example:
             row = db.get_image_by_path("/photos/sunset.jpg")
             if row:
-                print(row["status"])  # "pending" or "processed"
+                log.info(row["status"])  # "pending" or "processed"
         """
         cursor = self._conn.execute(
             "SELECT * FROM images WHERE path = ?", (path,)
@@ -560,8 +573,8 @@ class Database:
         Example:
             faces = db.get_faces_for_image(42)
             for face in faces:
-                print(f"Face at ({face['bbox_x']}, {face['bbox_y']}), "
-                      f"confidence={face['det_score']:.2f}")
+                log.info(f"Face at ({face['bbox_x']}, {face['bbox_y']}), "
+                         f"confidence={face['det_score']:.2f}")
         """
         cursor = self._conn.execute(
             "SELECT * FROM faces WHERE image_id = ? ORDER BY id",

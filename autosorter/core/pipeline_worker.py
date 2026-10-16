@@ -34,13 +34,16 @@ On restart, each stage picks up exactly where it left off.
 - Batch DB commits reduce SQLite I/O by ~10x
 """
 
-import time
+import logging
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import List, Optional
 
 from PySide6.QtCore import QThread, Signal
+
+log = logging.getLogger(__name__)
 
 from autosorter.core.doc_classifier import classify_image
 from autosorter.core.bounded import run_bounded
@@ -193,6 +196,7 @@ class PipelineWorker(QThread):
             self.pipeline_finished.emit(summary)
 
         except Exception as e:
+            log.exception("Pipeline execution failed")
             self.error.emit(f"Pipeline failed: {e}")
         finally:
             if db is not None:

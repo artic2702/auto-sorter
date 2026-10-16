@@ -62,8 +62,8 @@ class DetectedFace:
 
     Usage:
         face = DetectedFace(bbox=(100, 50, 180, 200), ...)
-        print(face.bbox)        # (100, 50, 180, 200)
-        print(face.confidence)  # 0.95
+        log.info(face.bbox)        # (100, 50, 180, 200)
+        log.info(face.confidence)  # 0.95
     """
     # Bounding box: (x, y, width, height) in original image pixels
     bbox: Tuple[int, int, int, int]
@@ -190,7 +190,7 @@ class FaceDetector:
         detector = FaceDetector()
         faces = detector.detect(image)
         for face in faces:
-            print(f"Face at {face.bbox}, confidence={face.confidence:.2f}")
+            log.info(f"Face at {face.bbox}, confidence={face.confidence:.2f}")
     """
 
     def __init__(

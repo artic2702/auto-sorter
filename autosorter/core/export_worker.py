@@ -14,6 +14,7 @@ UI stays responsive, with progress signals and cancel support.
          └── error(message)                → shows error dialog
 """
 
+import logging
 from pathlib import Path
 from typing import Optional
 
@@ -21,6 +22,8 @@ from PySide6.QtCore import QThread, Signal
 
 from autosorter.core.db import Database
 from autosorter.core.export import export_library
+
+log = logging.getLogger(__name__)
 
 
 class ExportWorker(QThread):
@@ -101,6 +104,7 @@ class ExportWorker(QThread):
             self.finished.emit(result)
 
         except Exception as e:
+            log.exception("Export worker execution failed")
             self.error.emit(str(e))
 
     def _on_progress(self, done: int, total: int, detail: str) -> None:

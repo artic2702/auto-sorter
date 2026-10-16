@@ -23,6 +23,7 @@ This two-step approach works for ALL filenames on ALL Windows systems.
 
 import hashlib
 import io
+import logging
 import os
 from pathlib import Path
 from typing import Optional, Tuple
@@ -30,6 +31,8 @@ from typing import Optional, Tuple
 import cv2
 import numpy as np
 from PIL import Image, ImageOps
+
+log = logging.getLogger(__name__)
 
 # Register HEIF opener so PIL Image.open() automatically supports .heic / .heif
 try:
@@ -91,6 +94,7 @@ def _decode_raw_image(raw_bytes: bytes) -> Optional[np.ndarray]:
                 elif thumb.format == rawpy.ThumbFormat.BITMAP:
                     return cv2.cvtColor(thumb.data, cv2.COLOR_RGB2BGR)
             except Exception:
+                log.warning("RAW thumbnail extraction failed; falling back to postprocess", exc_info=True)
                 pass  # Fallback to postprocessing if no thumbnail exists
 
             # Fallback path B: Fast half-size demosaic if no embedded preview
@@ -102,6 +106,7 @@ def _decode_raw_image(raw_bytes: bytes) -> Optional[np.ndarray]:
             )
             return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
     except Exception:
+        log.warning("Failed to decode RAW image bytes", exc_info=True)
         return None
 
 
@@ -171,6 +176,7 @@ def _read_image_safe(
                     try:
                         pil_img.draft("RGB", (max_decode_dim, max_decode_dim))
                     except Exception:
+                        log.warning("PIL draft resize failed; falling back to full decode", exc_info=True)
                         pass
                 pil_img = ImageOps.exif_transpose(pil_img)
                 if max_decode_dim:
@@ -184,6 +190,7 @@ def _read_image_safe(
                 rgb_array = np.array(pil_img)
                 return cv2.cvtColor(rgb_array, cv2.COLOR_RGB2BGR)
         except Exception:
+            log.warning("PIL image decode failed for %s", file_path, exc_info=True)
             pass
 
         # Step 4: Fallback — cv2.imdecode for edge cases PIL can't handle

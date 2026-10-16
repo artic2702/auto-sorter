@@ -6,10 +6,12 @@ from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
 from autosorter.app.main_window import MainWindow
+from autosorter.logging_setup import setup_logging
 from autosorter.paths import APP_ICON
 
 
 def main() -> int:
+    setup_logging(None)
     app = QApplication(sys.argv)
     app.setApplicationName("Auto-Sorter")
     app.setOrganizationName("AutoSorter")

@@ -32,7 +32,10 @@ from pathlib import Path
 from typing import Optional
 
 import cv2
+import logging
 import numpy as np
+
+log = logging.getLogger(__name__)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -178,6 +181,7 @@ def _score_color_entropy(thumbnail_path: str) -> float:
         buf = np.fromfile(thumbnail_path, dtype=np.uint8)
         img = cv2.imdecode(buf, cv2.IMREAD_COLOR)
     except Exception:
+        log.warning("Failed to decode thumbnail for color entropy: %s", thumbnail_path, exc_info=True)
         return 0.0
 
     if img is None:
@@ -239,6 +243,7 @@ def _score_edge_density(thumbnail_path: str) -> float:
         buf = np.fromfile(thumbnail_path, dtype=np.uint8)
         img = cv2.imdecode(buf, cv2.IMREAD_GRAYSCALE)
     except Exception:
+        log.warning("Failed to decode thumbnail for edge density: %s", thumbnail_path, exc_info=True)
         return 0.0
 
     if img is None:
