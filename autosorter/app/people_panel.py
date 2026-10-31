@@ -874,6 +874,16 @@ class PeoplePanel(QWidget):
 
         self._build_ui()
 
+    def set_data_folder(self, data_folder: Path) -> None:
+        """Update the data folder and close any open child windows."""
+        self._data_folder = data_folder
+        for window in self._detail_windows:
+            try:
+                window.close()
+            except Exception:
+                pass
+        self._detail_windows.clear()
+
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)

@@ -565,6 +565,17 @@ class AlbumsPanel(QWidget):
 
         self._build_ui()
 
+    def set_data_folder(self, data_folder: Path) -> None:
+        """Update the data folder and close any open dialogs."""
+        self._data_folder = data_folder
+        if hasattr(self, "_open_dialogs"):
+            for dialog in self._open_dialogs:
+                try:
+                    dialog.close()
+                except Exception:
+                    pass
+            self._open_dialogs.clear()
+
     def _build_ui(self) -> None:
         """Build the albums panel UI."""
         layout = QVBoxLayout(self)

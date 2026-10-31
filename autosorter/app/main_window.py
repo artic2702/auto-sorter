@@ -83,6 +83,7 @@ class MainWindow(QMainWindow):
         # --- State ---
         self._photo_folder: Path | None = None
         self._data_folder: Path | None = None
+        self._custom_data_folder: bool = False
         self._pipeline_worker: PipelineWorker | None = None
         self._viewers: list = []  # Keep references to open PhotoViewer windows
 
@@ -117,10 +118,10 @@ class MainWindow(QMainWindow):
         self._photo_path_label = QLabel("(not selected)")
         self._photo_path_label.setStyleSheet(STYLE_MUTED_LABEL)
         photo_row.addWidget(self._photo_path_label, stretch=1)
-        photo_browse = QPushButton("Browse…")
-        photo_browse.setFixedWidth(90)
-        photo_browse.clicked.connect(self._pick_photo_folder)
-        photo_row.addWidget(photo_browse)
+        self._photo_browse_btn = QPushButton("Browse…")
+        self._photo_browse_btn.setFixedWidth(90)
+        self._photo_browse_btn.clicked.connect(self._pick_photo_folder)
+        photo_row.addWidget(self._photo_browse_btn)
         layout.addLayout(photo_row)
 
         data_row = QHBoxLayout()
@@ -128,10 +129,10 @@ class MainWindow(QMainWindow):
         self._data_path_label = QLabel("(auto — inside photo folder)")
         self._data_path_label.setStyleSheet(STYLE_MUTED_LABEL)
         data_row.addWidget(self._data_path_label, stretch=1)
-        data_browse = QPushButton("Browse…")
-        data_browse.setFixedWidth(90)
-        data_browse.clicked.connect(self._pick_data_folder)
-        data_row.addWidget(data_browse)
+        self._data_browse_btn = QPushButton("Browse…")
+        self._data_browse_btn.setFixedWidth(90)
+        self._data_browse_btn.clicked.connect(self._pick_data_folder)
+        data_row.addWidget(self._data_browse_btn)
         layout.addLayout(data_row)
 
         layout.addSpacing(4)
@@ -231,6 +232,30 @@ class MainWindow(QMainWindow):
     # Folder selection
     # ==================================================================
 
+    def _reset_views(self) -> None:
+        """Clear all loaded views and cached panels when switching folders."""
+        for viewer in list(self._viewers):
+            try:
+                viewer.close()
+            except Exception:
+                pass
+        self._viewers.clear()
+
+        self._library_label.setVisible(False)
+        self._library_label.setText("")
+
+        self._people_container.setVisible(False)
+        if self._people_panel is not None and self._data_folder is not None:
+            self._people_panel.set_data_folder(self._data_folder)
+
+        self._albums_container.setVisible(False)
+        if self._albums_panel is not None and self._data_folder is not None:
+            self._albums_panel.set_data_folder(self._data_folder)
+
+        self._photo_grid.setModel(None)
+        self._photo_grid.setVisible(False)
+        self._spacer_label.setVisible(True)
+
     def _pick_photo_folder(self) -> None:
         folder = QFileDialog.getExistingDirectory(
             self, "Select your photo folder"
@@ -240,14 +265,16 @@ class MainWindow(QMainWindow):
             self._photo_path_label.setText(folder)
             self._photo_path_label.setStyleSheet("")
 
-            if self._data_folder is None:
+            if not self._custom_data_folder:
                 self._data_folder = self._photo_folder / ".autosorter"
                 self._data_path_label.setText(str(self._data_folder))
+                self._data_path_label.setStyleSheet("")
 
             setup_logging(self._data_folder)
             self._start_btn.setEnabled(True)
 
-            # Show library state if DB already exists (M6: resume support)
+            # Reset previous views and update library state (M6: resume support)
+            self._reset_views()
             self._update_library_summary()
 
     def _pick_data_folder(self) -> None:
@@ -255,12 +282,14 @@ class MainWindow(QMainWindow):
             self, "Select data storage folder"
         )
         if folder:
+            self._custom_data_folder = True
             self._data_folder = Path(folder)
             self._data_path_label.setText(folder)
             self._data_path_label.setStyleSheet("")
             setup_logging(self._data_folder)
 
-            # Update library summary with new data folder
+            # Reset previous views and update library summary with new data folder
+            self._reset_views()
             self._update_library_summary()
 
     def _update_library_summary(self) -> None:
@@ -278,6 +307,11 @@ class MainWindow(QMainWindow):
             self._library_label.setVisible(False)
             self._start_btn.setText("▶  Start")
             self._status_label.setText("Ready — click Start.")
+            self._photo_grid.setModel(None)
+            self._photo_grid.setVisible(False)
+            self._spacer_label.setVisible(True)
+            self._people_container.setVisible(False)
+            self._albums_container.setVisible(False)
             return
 
         try:
@@ -323,16 +357,31 @@ class MainWindow(QMainWindow):
             # Auto-load existing data
             if state["total"] > 0:
                 self._load_thumbnail_grid()
+            else:
+                self._photo_grid.setModel(None)
+                self._photo_grid.setVisible(False)
+                self._spacer_label.setVisible(True)
+
             if state["persons"] > 0:
                 self._show_people_panel()
+            else:
+                self._people_container.setVisible(False)
+
             # M7: Show albums panel if library has data
             if state["total"] > 0:
                 self._show_albums_panel()
+            else:
+                self._albums_container.setVisible(False)
 
         except Exception:
             log.exception("Failed to update library summary")
             self._library_label.setVisible(False)
             self._start_btn.setText("▶  Start")
+            self._photo_grid.setModel(None)
+            self._photo_grid.setVisible(False)
+            self._spacer_label.setVisible(True)
+            self._people_container.setVisible(False)
+            self._albums_container.setVisible(False)
 
     # ==================================================================
     # Pipeline control (M6)
@@ -355,6 +404,8 @@ class MainWindow(QMainWindow):
         self._pipeline_worker.error.connect(self._on_error)
 
         self._start_btn.setEnabled(False)
+        self._photo_browse_btn.setEnabled(False)
+        self._data_browse_btn.setEnabled(False)
         self._speed_combo.setEnabled(False)
         self._cancel_btn.setVisible(True)
         self._cancel_btn.setEnabled(True)
@@ -401,6 +452,8 @@ class MainWindow(QMainWindow):
     def _on_pipeline_finished(self, summary: dict) -> None:
         """Handle pipeline completion — show results and enable re-scan."""
         self._start_btn.setEnabled(True)
+        self._photo_browse_btn.setEnabled(True)
+        self._data_browse_btn.setEnabled(True)
         self._speed_combo.setEnabled(True)
         self._cancel_btn.setVisible(False)
         self._cancel_btn.setEnabled(True)
@@ -486,6 +539,8 @@ class MainWindow(QMainWindow):
     def _on_error(self, message: str) -> None:
         """Handle pipeline errors."""
         self._start_btn.setEnabled(True)
+        self._photo_browse_btn.setEnabled(True)
+        self._data_browse_btn.setEnabled(True)
         self._speed_combo.setEnabled(True)
         self._start_btn.setText("▶  Resume")
         self._cancel_btn.setVisible(False)
@@ -511,12 +566,18 @@ class MainWindow(QMainWindow):
 
         db_path = self._data_folder / "library.db"
         if not db_path.is_file():
+            self._photo_grid.setModel(None)
+            self._photo_grid.setVisible(False)
+            self._spacer_label.setVisible(True)
             return
 
         with Database(db_path) as db:
             images = db.get_all_images_with_thumbs()
 
         if not images:
+            self._photo_grid.setModel(None)
+            self._photo_grid.setVisible(False)
+            self._spacer_label.setVisible(True)
             return
 
         self._photo_grid.setModel(PhotoGridModel(images, GRID_THUMB_SIZE))
@@ -567,6 +628,8 @@ class MainWindow(QMainWindow):
         if self._people_panel is None:
             self._people_panel = PeoplePanel(self._data_folder)
             self._people_container.layout().addWidget(self._people_panel)
+        else:
+            self._people_panel.set_data_folder(self._data_folder)
 
         self._people_panel.load_persons()
         self._people_container.setVisible(True)
@@ -579,6 +642,8 @@ class MainWindow(QMainWindow):
         if self._albums_panel is None:
             self._albums_panel = AlbumsPanel(self._data_folder)
             self._albums_container.layout().addWidget(self._albums_panel)
+        else:
+            self._albums_panel.set_data_folder(self._data_folder)
 
         self._albums_panel.load_albums()
         self._albums_container.setVisible(True)
