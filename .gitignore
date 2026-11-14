@@ -4,11 +4,6 @@ __pycache__/
 *.pyc
 *.egg-info/
 
-# Node / Electron
-node_modules/
-out/
-release/
-
 # Testing & Linting
 .pytest_cache/
 .ruff_cache/
