@@ -24,18 +24,37 @@ Your original photos are never modified or uploaded anywhere.
 
 ## Tech
 
-Python 3.12 · PySide6 (Qt) · OpenCV YuNet (face detection) + SFace (face recognition, both Apache-2.0 incl. weights) · SQLite
+Electron.js Desktop UI · Python 3.11+ JSON-RPC Sidecar (`autosorter.bridge`) · OpenCV YuNet (face detection) + SFace (face recognition, both Apache-2.0/MIT incl. weights) · SQLite · PySide6 (legacy Qt UI)
 
-## Development setup
+## Run the Electron Desktop App (Recommended)
+
+Requires Node.js 18+ and Python 3.11+ with `opencv-python`, `numpy`, and `Pillow` installed.
+
+```powershell
+npm install
+npm start          # launch Auto-Sorter desktop app
+npm run dev        # launch with detached DevTools & Python stderr logs
+npm run selftest   # run automated Electron + Python sidecar health check
+npm run dist       # build standalone Windows installer (release\Auto-Sorter-Setup-0.1.0.exe)
+```
+
+## Legacy Qt UI setup
 
 ```powershell
 py install 3.12            # if not present (Python Install Manager)
 py -V:3.12 -m venv .venv
 .\.venv\Scripts\python -m pip install -r requirements.txt
-.\.venv\Scripts\python -m autosorter    # run the app
+.\.venv\Scripts\python -m autosorter    # run the Qt app
 ```
 
 ## Run the tests
+
+```powershell
+python -m unittest tests/test_bridge.py -v   # Electron RPC bridge & engine tests
+npm run selftest                             # Electron desktop boot & model verification
+```
+
+For the full Qt + pytest suite:
 
 ```powershell
 pip install -r requirements-dev.txt

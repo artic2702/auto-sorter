@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta
+    http-equiv="Content-Security-Policy"
+    content="default-src 'self'; img-src 'self' data: autosorter-media:; style-src 'self' 'unsafe-inline'; script-src 'self';"
+  />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Auto-Sorter</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar" id="topbar">
+      <button class="brand" id="brandBtn" type="button" title="Auto-Sorter Overview">
+        <span class="mark" id="brandMark"></span>
+        <span>Auto-Sorter</span>
+      </button>
+      <span class="pill ok no-drag" title="100% local processing — photos never leave your computer">
+        <span class="dot"></span>Offline
+      </span>
+      <nav id="topNav" aria-label="Primary"></nav>
+      <div class="spacer"></div>
+      <div class="topbar-right no-drag" id="topbarRight"></div>
+    </header>
+
+    <main class="workspace" id="workspace">
+      <div id="view"></div>
+    </main>
+  </div>
+
+  <div id="modalHost"></div>
+  <div id="lightboxHost"></div>
+
+  <div class="global-drop-overlay hidden" id="dropOverlay">
+    <div class="gdo-inner">
+      <div id="dropOverlayIcon"></div>
+      <h2>Drop folder to open library</h2>
+      <p class="muted" style="margin:4px 0 0">Original photos are never modified or moved</p>
+    </div>
+  </div>
+
+  <div class="toast-stack" id="toastStack" aria-live="polite"></div>
+
+  <script src="./icons.js"></script>
+  <script src="./app.js"></script>
+</body>
+</html>
