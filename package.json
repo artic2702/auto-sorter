@@ -1,0 +1,74 @@
+{
+  "name": "autosorter-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Auto-Sorter — Privacy-first, 100% offline photo organizer for Windows.",
+  "author": "Auto-Sorter",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "selftest": "electron . --selftest",
+    "dist": "node electron/packaging/build_installer.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "build": {
+    "appId": "com.autosorter.desktop",
+    "productName": "Auto-Sorter",
+    "compression": "maximum",
+    "electronLanguages": [
+      "en-US"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "electron/main.js",
+      "electron/preload.js",
+      "electron/renderer/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "build/bridge-dist/autosorter-engine",
+        "to": "engine",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "electron/packaging/icon.ico",
+        "to": "icon.ico"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "electron/packaging/icon.ico",
+      "artifactName": "Auto-Sorter-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Auto-Sorter",
+      "installerIcon": "electron/packaging/icon.ico",
+      "uninstallerIcon": "electron/packaging/icon.ico",
+      "installerHeaderIcon": "electron/packaging/icon.ico"
+    }
+  },
+  "devDependencies": {
+    "electron": "^35.1.5",
+    "electron-builder": "^26.8.1"
+  }
+}
